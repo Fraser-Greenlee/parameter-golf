@@ -180,78 +180,60 @@ like GPT-2 is valid *only if* the resulting weights compress within budget after
 
 **Current best recipe**: bigram SVD embeddings + full_circuit attention init (no bias) = **2.3891 bpb** (-0.040 vs baseline)
 
-**Focus**: engineered weights — structures we can compute from corpus statistics or
-linguistic priors and express as code (zero artifact bytes). Training modifications
-are secondary; the contest's training loop is already well-optimized.
+**Focus**: engineered weights expressed as code (zero artifact bytes). Two sources are
+allowed: (1) corpus statistics computed from FineWeb at training start, and (2) parametric
+formulas derived from studying pre-trained model geometry. Downloading pre-trained weights
+at training time is against the spirit of the contest.
 
-### E1: Trigram/n-gram statistics in MLP weights
+**Key lesson from completed experiments**: generic structural geometry works (bigram SVD,
+identity QK, copy OV), specific linguistic encodings don't (RoPE previous-token, unigram
+bias). This suggests we should extract *quantitative* structure from trained models and
+express it as parametric curves, not try to hand-encode specific linguistic patterns.
 
-**Priority: HIGH** — Bigram embeddings gave our biggest win. MLP layers are the natural
-home for higher-order n-gram patterns.
+### E3: Quantitative weight geometry from trained models
 
-- Geva et al. showed MLP layers act as key-value memories: each neuron matches an input
-  pattern (via W_up row) and produces an output (via W_down column)
-- Compute top-K most frequent trigrams from FineWeb
-- For each trigram (a,b,c): engineer an MLP neuron in layer 1 whose W_up row has high
-  dot product with the bigram embedding of (a,b) context, and whose W_down column
-  pushes the logit of token c
-- relu² activation means neurons are naturally sparse — a few hand-coded neurons won't
-  interfere with the rest
-- Start with layer 1 MLP (processes output of first attention layer)
+**Priority: HIGH** — Measure actual weight structure, express as parametric code.
 
-### E2: Skip-trigram attention OV circuits
+- Rather than hand-tuning full_circuit parameters (r_qk=0.06, beta_qk=0.3, etc.), fit
+  them quantitatively from our model analysis data
+- Measure actual W_Q row norms per head across Pythia/SmolLM/GPT-2 → set per-head q_gain
+  (currently uniform 1.5 — specializing costs zero extra params)
+- Fit identity_strength(layer_position) as a simple curve from the per-layer QK/OV identity
+  cosine data in summaries.json and head_behavior.json
+- Fit spectral decay rates per layer position (our analysis has this data)
+- This is using the models as *references for parametric formulas*, not weight transfer
 
-**Priority: HIGH** — Encode common [A]...[B]→[C] patterns into attention heads.
+### E5: Embedding norm structure from corpus statistics
 
-- The OV circuit of an attention head determines what information moves when attention fires
-- W_E^T · W_OV · W_E tells how attended tokens affect logits (see CIRCUIT_INIT.md)
-- Compute top skip-bigrams from FineWeb: which token pairs (A,B) frequently co-occur
-  at distances 2-10, and what token C follows B in those contexts
-- Engineer 1-2 OV circuits per layer to boost P(C|attended A, current B)
-- This is the "copy + transform" circuit that the Anthropic papers describe
+**Priority: HIGH** — Cheap, uses FineWeb data we already have.
 
-### E3: Per-head q_gain from trained model analysis
+- With tied embeddings, token embedding norms directly affect prediction probability
+- Currently our bigram SVD embeddings have unit norms (we normalized them)
+- Instead: scale norms proportional to sqrt(frequency) or log(frequency) from FineWeb
+- Common tokens get larger embeddings → naturally higher logits → encodes unigram
+  distribution in the embedding geometry itself
+- Unlike the additive unigram bias (which interfered), this preserves the relative
+  *directions* from bigram SVD while encoding *magnitude* from frequencies
+- Very quick to test — just change the normalization in bigram_emb init
 
-**Priority: HIGH** — Simple, zero extra parameters.
+### E1: Trigram statistics in MLP weights
 
-- Our analysis found trained models have different q_gain-like behavior per head and layer
-- Extract the effective attention temperature per head from our head_behavior.json
-  (entropy scores vary significantly: some heads are sharp, others diffuse)
-- Set per-head q_gain values at init to match trained model statistics
-- Currently q_gain is uniform 1.5 for all heads — specializing it could help
+**Priority: MEDIUM** — Higher-order n-grams, but speculative.
 
-### E4: Bigram-informed first-layer attention
+- Compute top-K trigrams from FineWeb at training start
+- Engineer MLP neurons in layer 1 whose W_up rows match bigram context and W_down
+  columns push the trigram completion token
+- Risk: fragile, may interfere with learning (same pattern as P2/unigram_bias failures)
+- Only worth trying if E3/E5 gains plateau
 
-**Priority: MEDIUM** — Make the first attention layer directly process bigram information.
+### E6: Depth-varying init from cross-model curves
 
-- Layer 0 attention sees the embedded tokens before any processing
-- With bigram SVD embeddings, the dot product of adjacent token embeddings already
-  encodes bigram PMI — but the attention layer needs the right QK circuit to use it
-- Engineer layer 0's QK to amplify the bigram signal: W_Q and W_K project onto the
-  top-k bigram SVD dimensions (where most co-occurrence info lives)
-- The OV circuit then copies the attended token's representation
+**Priority: MEDIUM** — Use quantitative analysis data, not hand-tuned knobs.
 
-### E5: Engineered embedding norm structure
-
-**Priority: MEDIUM** — Token frequency encoded in embedding geometry.
-
-- With tied embeddings, output logit = x · emb[token]. Token embedding norms directly
-  affect how likely each token is to be predicted
-- Currently our bigram SVD embeddings have unit norms (we normalized)
-- Instead: set embedding norms proportional to sqrt(frequency) or log(frequency)
-- Common tokens get larger embeddings → naturally higher logits → implicitly encodes
-  unigram distribution without a separate bias parameter
-- This is the "cleaner" version of the P3 unigram bias that failed
-
-### E6: Depth-varying attention structure from analysis
-
-**Priority: MEDIUM** — Use our cross-model analysis to set different init per layer.
-
-- Our analysis showed clear layer-position trends: early layers have more previous-token
-  and positional heads, late layers have more copy and content heads
-- Set different full_circuit parameters per layer: stronger identity QK in later layers
-  (where copy heads dominate), weaker in early layers
-- Use the actual per-layer OV identity cosine and QK decay rates from summaries.json
+- Extract per-layer QK identity cosine, OV decay rate, effective rank from summaries.json
+- Fit smooth curves: identity_strength(layer_pos), decay_rate(layer_pos), etc.
+- Apply as depth-varying parameters in full_circuit init
+- This is the quantitative version of what full_circuit does with fixed constants
 
 ### P4: Longer runs / CUDA validation
 
