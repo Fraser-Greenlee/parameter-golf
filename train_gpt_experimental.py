@@ -113,6 +113,10 @@ class Hyperparameters:
 
     attn_reuse = bool(int(os.environ.get("ATTN_REUSE", "1")))
 
+    # Checkpoint saving for weight analysis (0 = disabled)
+    save_ckpt_every = int(os.environ.get("SAVE_CKPT_EVERY", 0))
+    ckpt_dir = os.environ.get("CKPT_DIR", "./checkpoints")
+
 # -----------------------------
 # MUON OPTIMIZER
 # -----------------------------
@@ -1489,6 +1493,12 @@ def main() -> None:
                 f"step:{step}/{args.iterations} train_loss:{train_loss.item():.4f} "
                 f"train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / step:.2f}ms"
             )
+
+        if args.save_ckpt_every > 0 and step % args.save_ckpt_every == 0 and master_process:
+            ckpt_path = os.path.join(args.ckpt_dir, f"step_{step:06d}.pt")
+            os.makedirs(args.ckpt_dir, exist_ok=True)
+            torch.save({"step": step, "state_dict": {k: v.detach().cpu().float() for k, v in base_model.state_dict().items()}}, ckpt_path)
+            log0(f"ckpt:saved {ckpt_path}")
 
         # Needed to sync whether we've reached the wallclock cap.
         reached_cap = max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms

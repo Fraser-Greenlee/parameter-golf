@@ -69,44 +69,83 @@ like GPT-2 is valid *only if* the resulting weights compress within budget after
 
 ## Planned Experiments
 
+Priority ordering revised based on review feedback. Key strategic insight: pursue
+init engineering (P3/P1/P2) and compression engineering (P5a) in parallel — these
+are complementary axes with different ceilings.
+
+### P3: Log-unigram output bias
+**Priority: HIGH (do first)** — Lowest-effort, highest-certainty win.
+- Pre-compute token frequencies from FineWeb train shards
+- Set output bias to `log(freq_i / total)` — 1024 floats = 4KB, negligible
+- Current architecture has no output bias (tied embeddings) — add a bias vector
+- Every step the model spends learning "the" > "xylophone" is a step wasted
+- The unigram distribution is the single largest source of predictable cross-entropy
+
 ### P1: Bigram-informed embedding init
-**Priority: HIGH** — Encode actual FineWeb corpus statistics into weights, not just structural priors.
+**Priority: HIGH** — Encode actual FineWeb corpus statistics into weights.
 - Compute 1024×1024 bigram co-occurrence matrix from FineWeb train shards
 - SVD → top-512 singular vectors → initialize tied embedding matrix
-- The zero-layer model (embed → unembed) should already approximate bigram LM
-- Combine with full_circuit attention init from the sweep above
-- Expected impact: significant — this front-loads what the model learns first
+- **Important**: with tied embeddings, this sets both input and output projection.
+  SVD of co-occurrence gives vectors where dot products approximate PMI — reasonable
+  embedding space but may have weird norm properties interacting with RMSNorm.
+  Normalize each row to unit norm after SVD, store frequency info separately via P3 bias.
+  Embeddings encode *similarity structure*, bias encodes *frequency structure* — cleaner separation.
+- Combine with full_circuit attention init from the sweep
 
 ### P2: RoPE-aware induction circuit construction
 **Priority: HIGH** — Our identity_qk was generic. This is the specific formula.
-- Layer 1: previous-token head via RoPE offset — W_Q and W_K project onto positional frequency dims with rotational offset for position i-1
-- Layer 2: induction head via K-composition — keys read "what preceded me" from layer 1's OV output, queries read "who am I" from content embedding
+- Layer 1: previous-token head via RoPE offset — pick the highest-frequency RoPE pair (θ_i),
+  set W_Q and W_K to project onto those 2 dimensions. RoPE rotation naturally creates offset-1 preference.
+- Layer 2: induction head via K-composition — keys read "what preceded me" from layer 1's OV output,
+  queries read "who am I" from content embedding
 - Uses 2 of 72 total heads — minimal capacity cost
-- Need to account for QK-norm (RMSNorm on Q,K) and q_gain when computing target weights
-- See WEIGHT_ENGINEERING.md "Hand-coding attention circuits" section for construction details
+- **QK-norm complication**: with RMSNorm on Q and K, effective attention logit is
+  `(Q/||Q|| . K/||K||) * q_gain * sqrt(d_head)`. Only *direction* matters, not magnitude.
+  For the prev-token head, projecting onto just 2 of 64 dims means q_gain needs to be large
+  enough that this head's attention is sharp. Prototype on paper first.
+- See WEIGHT_ENGINEERING.md "Hand-coding attention circuits" section
 
-### P3: Log-unigram output bias
-**Priority: MEDIUM** — Simplest possible change, zero parameters.
-- Set output bias to `log(freq_i / total)` from FineWeb token frequencies
-- Current architecture has no output bias (tied embeddings) — would need to add one or encode in embedding norms
-- Lets model skip learning the unigram distribution entirely
+### P1.5: Combined init ablation
+**Priority: HIGH (run after P3+P1+P2 are individually implemented)** — Verify components are additive.
+- Stack P3 + P1 + P2 + full_circuit incrementally
+- The mimetic result already showed init strategies can interfere unexpectedly
+- Test each combination: baseline, +P3, +P3+P1, +P3+P1+P2, +P3+P1+P2+full_circuit
+- If any combination is worse than its subset, investigate why
+
+### P5a: Compression via L1 regularization / gradual magnitude pruning
+**Priority: HIGH (run in parallel with init work)** — Potentially larger gains than init.
+- full_circuit already compressed 13% smaller (4.7MB vs 5.4MB int8+zlib)
+- Add L1 regularization or gradual magnitude pruning during training — easy to implement
+- If we achieve 2-3× better compression, we can fit **25-30M params** in 16MB instead of 17M
+- That model size increase could be worth far more than any init trick
+- Test: measure compressed size vs val_bpb tradeoff at different sparsity levels
+
+### P7: MLP initialization
+**Priority: MEDIUM** — Sweep was all attention-focused, but MLPs encode n-gram statistics.
+- Geva et al. showed MLP layers act as key-value memories
+- relu² activation means MLP neurons are very sparse by default
+- Initialize a few MLP neurons in layer 1 to detect high-frequency bigram patterns:
+  input weights match bigram embedding directions (from P1's SVD)
+- Lower priority because MLP structure is less well-characterized than attention circuits
 
 ### P4: Longer runs to validate init gap
-**Priority: MEDIUM** — Confirm the 0.010 bpb gap from the sweep holds at scale.
-- Run full_circuit vs baseline for 1000-2000 steps on MLX
-- If gap closes: init mainly helps compression, not convergence
-- If gap grows: real training dynamics advantage worth pursuing on CUDA
+**Priority: LOW** — Better to spend compute on P1/P2/P3 which have higher ceilings.
+- If bigram embeddings + full_circuit show a clear gap at 200 steps, that's validation enough
+- Don't need a separate 1000-step confirmation of full_circuit alone
+- Revisit if P1+P2+P3 results are ambiguous
 
-### P5: Compression-aware weight structure
-**Priority: MEDIUM** — Exploit the compression angle more deliberately.
-- full_circuit already compressed 13% smaller (4.7MB vs 5.4MB)
-- Test: encourage weight clustering/sparsity during training via regularization
-- Test: ALBERT-style weight sharing (share attention across layers) — fewer unique params, better compression
-- Goal: fit a wider/deeper model in the same 16MB budget
+### P5b: ALBERT-style weight sharing
+**Priority: LOW** — More invasive architecture change, test after P5a.
+- Share attention weights across all 9 layers — store 1 copy instead of 9
+- Group FFN into 3 groups of 3 layers — store 3 copies instead of 9
+- Freed budget enables wider d_model (768?) or more layers
+- Risk: may hurt final quality even if compression improves
 
 ### P6: Weight subcloning from GPT-2
-**Priority: LOW (needs feasibility check)** — Claims 4× faster convergence.
-- Slice GPT-2 Small (768→512 dim, 12→9 layers) via neuron importance ranking
-- Remap embeddings from GPT-2's 50257-vocab to our 1024-vocab via sub-word averaging
-- Must verify the resulting model still compresses within 16MB after training
-- Risk: vocabulary mismatch may negate benefits; subcloned weights may not compress well
+**Priority: LOW** — Vocabulary mismatch is a deeper problem than just remapping.
+- GPT-2's weights are optimized for 50k-token distribution; after slicing to 1024 tokens,
+  internal representations are organized around distinctions that don't exist in our vocabulary
+- 1024-token BPE has very different granularity (subword fragments, common short words)
+  than GPT-2's token space
+- The 4× convergence claim is for *matched vocabulary* subcloning
+- Revisit only if P1-P5a don't pan out
