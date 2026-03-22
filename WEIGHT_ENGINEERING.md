@@ -1,0 +1,147 @@
+# Compiling structure into transformer weights for OpenAI Parameter Golf
+
+**The most promising path to competitive BPB in OpenAI's Parameter Golf challenge combines three techniques: encoding n-gram statistics directly into embedding/output matrices, hand-initializing 2–3 attention heads per layer with known circuits (previous-token, induction), and exploiting aggressive quantization (int5/int6) with compression-aware training to fit far more effective parameters into the 16MB budget.** These approaches are grounded in a decade of mechanistic interpretability research showing that transformers learn predictable circuits in a predictable order — and that order can be front-loaded. The competition's current frontier of **1.1428 BPB** was reached in just 3 days through innovations in quantization and bigram hash embeddings, but no top entry yet uses programmatic weight construction. This represents an unexploited competitive edge.
+
+---
+
+## The competition: OpenAI's Parameter Golf and the NanoGPT speedrun lineage
+
+OpenAI launched the **Model Craft Challenge: Parameter Golf** on March 18, 2026, with a dual purpose: advancing compression research and recruiting talent ($1M in RunPod compute credits, top performers invited to interview). The rules are precise: artifacts ≤16MB (decimal: 16,000,000 bytes), ≤10 minutes wallclock on 8×H100 SXM GPUs, scored by bits-per-byte on the first 50,000 FineWeb validation documents using a 1024-token SentencePiece BPE vocabulary.
+
+The leaderboard moved fast. The naive baseline scored **1.2244 BPB**; within 3 days, the top entry by `thwu1` reached **1.1428 BPB** using mixed int5/int6 quantization, BigramHash(10240), stochastic weight averaging (SWA at 0.4), and weight decay 0.04. An open PR claims 1.1399. The key innovations from top entries cluster around three areas: **quantization tricks** that stretch the 16MB budget (int5 for MLP weights saves ~1.86MB vs int6, enabling 10–11 layers instead of 9), **architectural additions** like SmearGate (one-token look-back) and BigramHash embedding (hash consecutive token pairs into a learned table), and **evaluation-time tricks** like sliding-window eval at stride=64 (~0.03 BPB improvement for free).
+
+Parameter Golf descends directly from Keller Jordan's **NanoGPT speedrun** (github.com/KellerJordan/modded-nanogpt, 4.7k stars), which compressed GPT-2-quality training from 45 minutes to **1.453 minutes** across 75 records. Nearly all architectural innovations in Parameter Golf — Muon optimizer, ReLU², U-net skip connections, QK-norm, RoPE, SmearGate, BigramHash — were first proven in the speedrun. The critical difference is that Parameter Golf optimizes L(N) (minimize loss at fixed parameter budget) rather than L(T) (minimize time at fixed loss target), making weight initialization and compression paramount rather than raw training speed.
+
+Crucially, **no top entry currently uses programmatic weight initialization**. Every submission starts from random or orthogonal initialization. This is the gap the techniques below aim to exploit.
+
+---
+
+## Encoding n-gram statistics directly into weight matrices
+
+The most immediately practical "compilation" technique is encoding corpus statistics into the embedding and output layers. Anthropic's mathematical framework for transformer circuits proved that a **zero-layer transformer (embedding → unembedding) directly models bigram statistics**: the product W_U · W_E gives a bigram log-probability table readable directly from the weights without running the model. For the competition's architecture with tied embeddings, this means the embedding matrix already implicitly defines a bigram distribution at initialization.
+
+The research strongly supports front-loading these statistics. Nguyen (NeurIPS 2024) showed that **79% of LLM next-token predictions on Wikipedia agree with n-gram rule predictions**, and that transformers progress from learning simple n-gram rules to complex ones during training. Svete & Cotterell (NAACL 2024) provided explicit constructive proofs: a single-layer transformer with n−1 attention heads can exactly represent any n-gram language model. For bigrams, one head attending to the previous position suffices; for trigrams, two heads attending to positions t−1 and t−2, with an MLP combining their outputs via a joint encoding.
+
+Three concrete initialization strategies emerge for the 1024-vocab Parameter Golf setting:
+
+**Log-unigram bias initialization** is the single highest-impact, lowest-effort technique. Set `lm_head.bias[i] = log(freq_i / total)` where frequencies are pre-computed from FineWeb. Meister et al. (2022) showed this improves learning efficiency, achieves better overall performance, and lets the model specialize on non-frequency patterns. The bias remains remarkably stable throughout training. For 1024 tokens, this is trivially computable and adds zero parameters.
+
+**Bigram-informed embedding initialization** encodes token co-occurrence structure. Pre-compute the 1024×1024 bigram co-occurrence matrix from FineWeb, apply SVD, and use the top-k singular vectors (k ≤ 512) to initialize the embedding matrix. Since embeddings are tied to the output projection, this simultaneously initializes W_E and W_U such that their product approximates the true bigram distribution. This gives the model a head start equivalent to what it would normally learn in the first several hundred training steps.
+
+**BigramHash embedding** — already used by top entries — is the competition's version of this insight. It hashes consecutive token pairs into a lookup table (e.g., 10240 buckets, dim=128), projected to model_dim via a learned linear layer. This is effectively a compiled bigram table with collision handling, and its presence in the #1 entry validates the importance of encoding bigram statistics. Combining BigramHash with SVD-initialized base embeddings could be additive.
+
+---
+
+## Hand-coding attention circuits: previous-token heads, induction heads, and copy mechanisms
+
+Anthropic's transformer circuits research provides **explicit weight matrix formulas** for the circuits that language models learn first and use most. These circuits can be directly written into initial weights.
+
+**Previous-token heads** are the simplest and most ubiquitous circuit. In GPT-2 Small, head 4.11 has an "almost perfectly off-diagonal" attention pattern — it attends to position i−1 with near-certainty. With RoPE (used in Parameter Golf), constructing this is straightforward: set W_Q and W_K to project onto positional frequency dimensions with a rotational offset corresponding to one position. The Anthropic exercises give the explicit construction: W_Q extracts positional frequencies directly, while W_K applies a 2D rotation matrix by angle α (the RoPE frequency), making the QK dot product maximized at offset −1. The OV circuit then copies the attended token's representation forward. For the competition's architecture (8 query heads, 4 KV heads, head_dim=64), dedicating **one KV head in layer 1** to this pattern costs nothing and eliminates the need for the model to discover this pattern through gradient descent. The existing SmearGate module in top entries does something similar — it explicitly mixes ~7% of the previous token's embedding — which validates that this circuit is valuable enough to hard-code.
+
+**Induction heads** are the primary in-context learning mechanism, implementing the pattern [A][B]...[A] → predict [B]. They require a two-layer circuit: Head 1 (layer L) copies the previous token's content into a designated residual stream subspace via its OV circuit; Head 2 (layer L+1) reads that subspace through K-composition — its keys encode "what token preceded me" rather than "what token am I." When the query (current token) matches a key (a token that was preceded by the same token type), Head 2 attends to that position and copies the next token to the output. Olsson et al. (2022) showed this circuit forms during a sharp "phase change" early in training, coinciding with dramatic improvement in in-context learning. **Pre-initializing this two-head circuit across layers 1–2 would skip the phase change entirely**, potentially saving hundreds of training steps.
+
+The explicit construction for K-composition induction with RoPE: In layer 1, set one head's W_QK to implement previous-token attention (as above), and W_OV to copy the content embedding to a designated 64-dimensional subspace of the residual stream. In layer 2, set the corresponding head's W_K to read from that subspace (so keys encode "my predecessor's content"), W_Q to read from the standard content embedding (so queries encode "who am I"), and W_OV to copy the attended token's content toward the output logits. This uses 2 of 72 total heads across 9 layers — minimal capacity cost for substantial capability gain.
+
+**Skip-trigram heads** implement patterns of the form [source]...[destination] → [output], like "keep...in" → "mind". Each is defined by its QK circuit (W_E^T · W_QK · W_E tells which tokens attend to which) and OV circuit (W_U · W_OV · W_E tells how attended tokens affect logits). The massive copying behavior observed in one-layer models — where heads boost the probability of the attended token — can be pre-initialized by setting W_OV ≈ a scaled portion of the identity in embedding space.
+
+**Key practical concern**: gradient descent may overwrite hand-coded circuits if they conflict with the training objective. Three mitigations exist: (1) use large-magnitude weights for hand-coded patterns to approximate hard attention, making them resistant to early gradient perturbation; (2) apply lower learning rates to pre-initialized heads during warmup; (3) initialize hand-coded circuits in a small subspace of the 512-dim residual stream (e.g., 64 dims), leaving the remaining 448 dims for learned representations. The competition's use of RMSNorm (which rescales residual stream vectors) complicates direct weight injection — hand-coded weights must account for the normalization scaling, which can be done by pre-multiplying the desired attention pattern by the expected norm statistics.
+
+---
+
+## Tracr, RASP, and the ALTA compiler: from programs to weights
+
+DeepMind's **Tracr compiler** (Lindner et al., NeurIPS 2023) provides the most mature toolchain for translating algorithms into transformer weights. RASP (Restricted Access Sequence Processing Language) maps directly to transformer components: `select(key, query, predicate)` → attention QK computation, `aggregate(selector, value)` → attention OV computation, and elementwise operations → MLP layers. Tracr compiles RASP programs through an intermediate "Craft" representation into concrete weight matrices.
+
+The compilation pipeline works in six steps: (1) trace the RASP program into a computational graph, (2) infer the finite set of possible values for each operation, (3) translate operations to Craft components (selectors → W_QK, aggregates → W_OV, elementwise → MLP with piecewise-linear ReLU approximation), (4) assign components to layers based on longest-path analysis, (5) assign each operation its own **orthogonal subspace** of the residual stream, and (6) assemble into standard transformer weight matrices.
+
+Tracr has successfully compiled: token frequency histograms (1–2 layers), sequence sorting (2 layers, ~25 residual dims), sequence reversal (2 layers), Dyck-n parenthesis checking (multiple layers), and fraction-of-previous-tokens counting (2 layers, 14 residual dims). The 2024 extension **ALTA** (Shaw et al., Google DeepMind) adds loop support and compiles to Universal Transformers, demonstrating parity, addition, and SCAN benchmark solutions.
+
+**Practical limitations for the competition are significant.** Tracr outputs models without layer normalization and uses the orthogonal subspace convention, which is wasteful — a simple counting program uses 14 of its residual dimensions just for input encodings. At d_model=512, you could theoretically pack many compiled programs, but the orthogonality requirement prevents efficient use of capacity. The Tracr paper shows compiled models can be compressed via learned projection (14 dims → 6), but this requires additional training. More fundamentally, **Tracr's compiled models are designed for algorithmic tasks with categorical inputs, not for language modeling with soft, distributed representations**.
+
+The practical recommendation is to use Tracr's insights about weight structure rather than its compiler directly. Understanding that a previous-token head needs W_QK = positional rotation and W_OV = content copy, or that a frequency counter needs a select-all aggregate, lets you hand-construct the equivalent weights more efficiently than running the full compilation pipeline. The compiled circuits would occupy designated subspaces of the residual stream, coexisting with gradient-trained weights in the remaining dimensions.
+
+---
+
+## Percepta AI's WASM interpreter: an existence proof, not a practical tool
+
+Percepta AI published "Can LLMs Be Computers?" on March 11, 2026, demonstrating a WebAssembly interpreter compiled entirely into transformer decoder weights. The architecture is remarkably compact: **7 layers, d_model=36, 18 attention heads with 2 dimensions per head**. This "2D attention head" concept is the core innovation — by restricting each head to exactly 2 dimensions, attention operations become efficient binary lookups enabling log-time sequence operations. Their **HullKVCache** mechanism reduces decoding complexity from O(n²) to O(k + log n), where k is program state size.
+
+The system works by compiling a C program to WASM, then encoding the WASM interpreter into weight matrices. Each forward pass executes one step of program execution, producing a deterministic execution trace. They demonstrated solving Arto Inkala's hardest Sudoku puzzle and performing multi-digit addition with 100% accuracy across millions of tokens. Processing speed: **33,000+ tokens/sec on CPU**.
+
+However, this work is fundamentally an **existence proof about transformer expressiveness, not a practical training technique**. The weights are compiled, not learned — no gradient descent is involved. The model is ~10,000× slower than native WASM execution. Most critically, **no integration with gradient-trained models has been demonstrated**. The differentiability claim ("gradients can propagate through the computation") relies on "average-hard attention" which isn't truly differentiable with respect to keys and queries.
+
+What is transferable: the insight that extremely compact architectures (2D heads) can implement complex computation. For the competition, this suggests that **individual attention heads can be highly specialized** — dedicating just 2–4 dimensions of a 64-dim head to a specific compiled function while leaving the remaining dimensions trainable. The HullKVCache concept of efficient state lookup could inspire novel KV cache management during evaluation.
+
+---
+
+## Weight initialization strategies that accelerate convergence
+
+Beyond hand-coding circuits, several initialization techniques directly accelerate training convergence in the 10-minute window.
+
+**µP (Maximal Update Parameterization)** by Greg Yang et al. ensures every layer learns features maximally at each optimization step by assigning per-parameter learning rates and initialization scales that remain stable as width changes. Key changes: attention scaling uses 1/d instead of 1/√d, hidden-to-hidden weight initialization uses σ ∝ 1/fan_in (not 1/√fan_in), and learning rates scale as globalLR/width_mult for hidden weights. The critical practical benefit: **optimal hyperparameters transfer across model widths**, so you can tune on a d=128 proxy model and transfer to d=512 target. EleutherAI provides a nanoGPT-mup reference implementation. The NanoGPT speedrun community already uses µP-style zero initialization for projection layers.
+
+**Mimetic initialization** (Trockman & Kolter, ICML 2023) observes that in pre-trained transformers, W_Q·W_K^T ≈ Identity and W_V·W_proj ≈ −Identity. Initializing with this structure makes early attention focus on self/local context (a reasonable language prior) and layers initially act as skip connections. This improved ViT training by +5% accuracy on CIFAR-10 and showed improvements on language model perplexity. For the competition, this is compute-free and directly compatible with the decoder-only architecture.
+
+**Weight subcloning from GPT-2** (Samragh et al., 2023) is potentially the single highest-ROI strategy. The process: (1) compute neuron importance across GPT-2 Small's layers using activation magnitudes on a small FineWeb calibration set, (2) rank neurons consistently across layers, keeping top-512 of 768, (3) select 9 of 12 layers via Block Importance scores (1 − cosine_sim(layer_input, layer_output)), (4) slice weight matrices to target dimensions. The subcloning paper reports **4× faster convergence**. This is offline preprocessing — adds zero training cost. However, the competition's 1024-token BPE vocabulary differs from GPT-2's 50257-token vocabulary, requiring embedding remapping (compute GPT-2 embedding averages for each competition token by running the tokenizer alignment).
+
+**Omnigrok insights** show that initialization scale directly controls generalization speed: large initialization → delayed generalization (grokking); small initialization → fast generalization. For a 10-minute training run, using **smaller initialization scale** (e.g., 0.01 std instead of 0.02) encourages faster generalization. This aligns with the NanoGPT speedrun's practice of initializing projection layers to zero and the Yao et al. (ICML 2025) finding that small initialization biases models toward learning compositional rules.
+
+**GradInit** (Zhu et al., NeurIPS 2021) introduces per-parameter-block scalar multipliers optimized for ~2000 iterations to minimize the first-step loss. This takes <1% of training time (~30 seconds in the 10-minute window) and could be run as a calibration step before main training. It particularly helps with novel architectures or unusual initializations — exactly the setting when combining hand-coded circuits with gradient training.
+
+---
+
+## Compression-aware design: making every byte count in 16MB
+
+The 16MB compressed artifact limit is the binding constraint of Parameter Golf. Understanding how int8 quantization and zlib compression interact with weight structure unlocks dramatically more effective parameters.
+
+**The math of the budget**: 16MB = 16,777,216 bytes. Uncompressed int8 weights use 1 byte per parameter, giving a naive limit of ~16.8M params. But zlib (DEFLATE algorithm) combines LZ77 dictionary compression with Huffman coding. Random high-entropy weights compress only ~1.1–1.5×, but structured weights compress far better. The top entries already exploit this: **mixed int5/int6 quantization** (the #1 entry's key innovation) packs MLP weights into 5 bits instead of 8, saving ~1.86MB that enables additional layers. Zstd-22 compression (used by several top entries) achieves better ratios than zlib on quantized weights.
+
+**What compresses well under DEFLATE**: (1) repeated byte values — long runs of zeros compress excellently via LZ77; (2) clustered values — if weights take few unique values, Huffman coding assigns short codes; (3) repeated block patterns — weight sharing across layers creates repeated byte sequences that LZ77 exploits within its 32KB sliding window; (4) smooth gradients — nearby similar values in memory create matchable patterns.
+
+**Sparsity is the most powerful compression lever.** A 90% sparse int8 tensor compresses roughly **5–10×** under zlib, since the zero bytes form long compressible runs. Combined with weight clustering (remaining nonzero values take ~4–8 unique levels), potential compression reaches **5–8×**, allowing **84–134M raw parameters in 16MB compressed**. The OpenAI circuit sparsity paper (Gao et al., 2025) showed that transformers can learn meaningful circuits even at **99.9% sparsity** (1 in 1,000 weights nonzero), though this requires 100–1000× more training compute. For the 10-minute budget, gradual magnitude pruning from 0% to **70–80% sparsity** during training is more practical and still provides substantial compression benefits.
+
+**ALBERT-style weight sharing** dramatically reduces unique parameters. Sharing attention weights across all 9 layers means storing one copy; sharing FFN weights in 3 groups of 3 layers stores 3 copies. With factorized embeddings (decompose V×D into V×E + E×D where E << D), unique parameters can drop from ~17M to ~5–6M. These 5–6M unique int8 weights, with moderate sparsity, compress to well under 16MB, freeing budget for wider models (d_model=768 or 1024) or more layers.
+
+**Quantization-aware training (QAT)** with straight-through estimator (STE) is used by all top entries. Training with fake-quantization operators during the forward pass adapts weights to land on int8 (or int5/int6) grid points, reducing post-training quantization error. The optimal weight distribution for quantization is one that naturally clusters around quantization levels. NF4 (from QLoRA) proved that Gaussian-prior-matched quantization is theoretically optimal; the equivalent insight for int8 is that **narrow, symmetric weight distributions** with few outliers quantize with minimal loss. L2 regularization (weight decay, already used at 0.04 by top entries) naturally encourages this.
+
+**Compressibility loss** (Aytekin et al., 2019) is an unexploited technique: a regularization term that forces weights toward ternary values (−1, 0, +1) at critical points, maximizing compressibility under any lossless compressor including zlib. Combined with soft weight-sharing (Ullrich et al., ICLR 2017), which models weights as a mixture of Gaussians encouraging tight clustering around a few values, this could achieve extreme compression ratios — potentially fitting a 50M+ effective-parameter model into 16MB.
+
+---
+
+## Syntactic structure and the OpenAI sparse circuits paper
+
+Research on transformers learning syntax provides insights into what structure to pre-load. Hewitt & Manning's **structural probes** (NAACL 2019) discovered that entire parse trees are embedded in BERT's vector geometry: a learned linear transformation B makes squared L2 distances between transformed vectors approximate parse tree distances. This **syntactic subspace** is low-dimensional (~64–128 dims of a 768-dim representation), suggesting that allocating a designated subspace for syntactic encoding at initialization could accelerate grammar learning.
+
+Clark et al. (2019) found specific BERT attention heads that correspond remarkably well to linguistic relations: direct objects of verbs, determiners of nouns, objects of prepositions, coreference chains. No single head performs holistic parsing, but **specialist heads for specific dependency types are common and predictable**. For the competition, initializing one attention head per layer-group to attend to nearby content-similar tokens (approximating syntactic head attachment) provides an inductive bias toward syntactic structure without requiring explicit parsing algorithms.
+
+The **OpenAI sparse circuits paper** (Gao et al., November 2025) is the most relevant recent work on weight structure and interpretability. Training GPT-2-style transformers with aggressive magnitude pruning after each optimizer step, they found that at matched pre-training loss, sparse models yield circuits **~16× smaller** than dense baselines. Their quote-matching circuit example is instructive: it uses just **5 residual channels, 2 MLP neurons, and 1 attention head** — neuron 1 detects quotes, neuron 2 classifies quote type, and the attention head copies the opening quote type to predict the closing quote. This is essentially a shift-reduce stack operation implemented in sparse weights.
+
+For the competition, the paper's key insights are: (1) **sparsity and interpretability are aligned** — sparse models develop cleaner, more modular circuits; (2) the capability-interpretability tradeoff is favorable at the competition's scale (tens of millions of parameters), where sparse training works well; (3) **pre-specified sparsity patterns could guide circuit formation** — rather than uniform top-k pruning, allocating specific sparsity budgets to different layer components (denser early layers, sparser middle layers) could steer learning toward efficient circuit structures. The code is open-source at github.com/openai/circuit_sparsity.
+
+---
+
+## Integrated strategy: a practical implementation plan
+
+Combining these findings into a concrete strategy for the competition, ordered by expected impact and implementation ease:
+
+**Tier 1 — Implement immediately** (estimated combined impact: 0.03–0.06 BPB improvement over current best approaches):
+
+The first priority is **log-unigram bias initialization**: pre-compute token frequencies from FineWeb, set `lm_head.bias = log(freq/total)`. This is trivial to implement, adds zero parameters, and lets the model skip learning the unigram distribution. Second, initialize the **embedding matrix via SVD of the bigram co-occurrence matrix** from FineWeb — with 1024 vocab, the full 1024×1024 matrix is tiny to compute. Use top-512 singular vectors as initial embeddings. Third, **hand-initialize 2 heads in layers 1–2 as an induction circuit**: layer 1 gets a previous-token head (W_QK implements RoPE-offset-1), layer 2 gets the K-composition induction head. This eliminates the phase change that normally costs hundreds of steps. Fourth, adopt **mixed int5/int6 quantization with QAT** (already proven by the #1 entry), and push toward int4 for the most compressible weight groups.
+
+**Tier 2 — High value, moderate implementation effort** (estimated impact: 0.01–0.03 BPB additional):
+
+Explore **weight subcloning from GPT-2 Small** (124M → target architecture) as an alternative to random initialization. This requires offline computation: run a small FineWeb calibration set through GPT-2, compute neuron importance, select top-512 neurons and 9 of 12 layers, remap embeddings to the 1024-token vocabulary by averaging GPT-2 sub-word embeddings. The subcloning literature reports 4× faster convergence. Apply **mimetic initialization** for any heads not hand-coded: set W_QK ≈ I (local attention) and W_VO ≈ −I (skip connections). Use **smaller initialization scale** (0.01 std) for all non-pre-initialized weights to bias toward fast generalization per the grokking literature.
+
+**Tier 3 — Experimental, potentially high-ceiling** (estimated impact: uncertain, 0.00–0.05 BPB):
+
+Implement **compressibility-aware regularization** that encourages weights toward a small codebook of values, maximizing zlib compression and potentially fitting a much larger model (30–50M effective params) into 16MB. Explore **ALBERT-style weight sharing** (share attention across all 9 layers, group FFN into 3 groups) to reduce unique parameters, using freed budget for wider d_model. Test **progressive growing**: train a 5-layer model for 4 minutes, expand to 11 layers via layer duplication, fine-tune for 6 minutes. Consider **Tracr-compiled circuits** for specific subtasks (token frequency counting, simple pattern matching) embedded in designated residual stream subspaces.
+
+---
+
+## Conclusion
+
+The competition's unexploited frontier lies at the intersection of mechanistic interpretability and practical weight engineering. While top entries have optimized quantization, architecture, and training dynamics, **none have attempted to pre-load the circuits that transformers demonstrably learn first** — bigram/trigram statistics, previous-token attention, induction heads, and copy mechanisms. The research literature provides explicit weight constructions for all of these, and the 1024-token vocabulary makes corpus-statistics-based initialization computationally trivial.
+
+The deepest insight from this research is that **compilation and training are not alternatives but complements**. A model initialized with compiled n-gram statistics and hand-coded attention circuits doesn't just start from a better point — it starts from a structurally organized point where gradient descent can more efficiently learn the residual complexity that requires distributional learning. The compiled circuits occupy designated subspaces of the residual stream; the remaining capacity is available for soft, distributed representations that no amount of hand-coding could produce.
+
+The single most underexploited technique is **compression-aware weight design**. If weight sparsity and clustering can achieve 5× zlib compression, the effective parameter budget jumps from ~17M to ~85M — a 5× increase that could translate to 0.05+ BPB improvement. Combining structured sparsity, weight sharing, and aggressive quantization (int4/int5) with a wider, deeper architecture optimized for compressibility may ultimately prove more impactful than any hand-coded initialization, because it addresses the binding constraint (16MB budget) rather than the secondary constraint (convergence speed in 10 minutes). The winning strategy likely combines both: a compression-optimized architecture filled with strategically compiled initial circuits, trained with Muon and finished with SWA.

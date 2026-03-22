@@ -62,3 +62,10 @@ New SOTA must beat existing record by >=0.005 nats at p < 0.01 significance.
 - **Score** = `val_bpb` (bits per byte on FineWeb validation set, tokenizer-agnostic)
 - Training capped at 10 minutes; evaluation also capped at 10 minutes (separate)
 - No network access or training data during evaluation
+
+## Experiment Log
+
+`analysis_results/experiment_log.md` is the running tracker for all experiments — both completed results and planned future experiments. Always check it before starting new work and append results after finishing. Key reference docs:
+- `CIRCUIT_INIT.md` — Circuit theory and mimetic init background
+- `WEIGHT_ENGINEERING.md` — Comprehensive research on weight compilation strategies
+- `analysis_results/` — All analysis outputs (JSON + markdown reports)
