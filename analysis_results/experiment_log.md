@@ -24,12 +24,14 @@ like GPT-2 is valid *only if* the resulting weights compress within budget after
 **Goal**: Test circuit-inspired attention initialization strategies derived from cross-model analysis of SmolLM2-135M, Pythia-70M, Qwen2.5-0.5B, and GPT-2.
 
 **Setup**:
+
 - Script: `train_gpt_mlx_sweep.py` (modified `train_gpt_mlx.py` with init injection)
 - 200 training steps, batch=8192 tokens, 1 train shard (~100M tokens)
 - Validation on ~20 batches of 524k tokens (subset of full val set)
 - Model: 9 layers, 512 dim, 8 heads, 4 KV heads, vocab 1024
 
 **Strategies tested**:
+
 1. **baseline** — Default Kaiming uniform Q/K/V, zero-init output projection
 2. **mimetic** — From Trockman & Kolter (ICML 2023): QK ~ alpha*noise + beta*I, OV ~ alpha*noise + beta*I, factored via SVD. alpha=beta=0.7 for QK, 0.4 for OV
 3. **spectral** — Random orthogonal bases with exponential SV decay matching trained model profiles (qk_decay=0.06, ov_decay=0.04)
@@ -40,17 +42,20 @@ like GPT-2 is valid *only if* the resulting weights compress within budget after
 
 **Results** (ranked by val_bpb, lower is better):
 
-| Rank | Strategy | val_bpb | Train@25 | Train@50 | Train@100 | Train@200 | Time |
-|------|----------|---------|----------|----------|-----------|-----------|------|
-| 1 | **full_circuit** | **2.4194** | 5.213 | 4.719 | 4.397 | 3.897 | 91s |
-| 2 | **identity_qk** | **2.4213** | 5.307 | 4.644 | 4.383 | 3.898 | 88s |
-| 3 | copy_ov | 2.4265 | 5.197 | 4.644 | 4.376 | 3.922 | 88s |
-| 4 | baseline | 2.4295 | 5.348 | 4.645 | 4.362 | 3.915 | 70s |
-| 5 | spectral | 2.4342 | 5.176 | 4.711 | 4.429 | 3.923 | 89s |
-| 6 | mimetic | 2.4360 | 5.514 | 4.764 | 4.403 | 3.922 | 81s |
-| 7 | ortho_head | 2.4377 | 5.212 | 4.714 | 4.430 | 3.931 | 87s |
+
+| Rank | Strategy         | val_bpb    | Train@25 | Train@50 | Train@100 | Train@200 | Time |
+| ---- | ---------------- | ---------- | -------- | -------- | --------- | --------- | ---- |
+| 1    | **full_circuit** | **2.4194** | 5.213    | 4.719    | 4.397     | 3.897     | 91s  |
+| 2    | **identity_qk**  | **2.4213** | 5.307    | 4.644    | 4.383     | 3.898     | 88s  |
+| 3    | copy_ov          | 2.4265     | 5.197    | 4.644    | 4.376     | 3.922     | 88s  |
+| 4    | baseline         | 2.4295     | 5.348    | 4.645    | 4.362     | 3.915     | 70s  |
+| 5    | spectral         | 2.4342     | 5.176    | 4.711    | 4.429     | 3.923     | 89s  |
+| 6    | mimetic          | 2.4360     | 5.514    | 4.764    | 4.403     | 3.922     | 81s  |
+| 7    | ortho_head       | 2.4377     | 5.212    | 4.714    | 4.430     | 3.931     | 87s  |
+
 
 **Key findings**:
+
 - **full_circuit wins** (2.4194 vs baseline 2.4295): -0.010 bpb combining identity QK + copy OV + orthogonal subspaces + spectral decay
 - **identity_qk is the single most impactful component** (2.4213): just biasing QK toward identity captures most of the gain
 - **copy_ov also helps** (2.4265): making OV circuits identity-like with spectral decay
@@ -61,91 +66,197 @@ like GPT-2 is valid *only if* the resulting weights compress within budget after
 **Interpretation**: The trained-model analysis showed QK circuits have positive identity cosine and copy heads dominate (31-47% across models). Directly encoding these biases at init (identity_qk, copy_ov) helps. The combination (full_circuit) is best. The spectral profile matching alone isn't enough — the *direction* (identity/copy) matters more than the *magnitude distribution* (SV decay).
 
 **Caveats**:
+
 - Only 200 steps on 1 shard — margins would likely grow over full 20k-step training
 - Validation on subset (~10M tokens) rather than full val set
 - All strategies converge to similar train_loss by step 200 — the val_bpb gap suggests init affects generalization, not just optimization speed
 
 ---
 
+### 2026-03-22: P3/P1 Embedding + Bias Sweep (MLX, 200 steps, 1 shard)
+
+**Goal**: Test corpus-statistics-based initialization (P3: unigram bias, P1: bigram embeddings) and their combinations with circuit init.
+
+**Pre-computation**:
+
+- Token frequencies from 1 FineWeb shard (100M tokens): 887/1024 tokens seen
+- Bigram co-occurrence matrix (1024×1024), log1p-transformed, SVD: top-16 captures 80% variance, top-128 gets 93%
+- Embedding init: unit-norm rows of U*sqrt(S) from bigram SVD, scaled to match tied_embed_init_std
+- Unigram bias: log(freq/total) with Laplace smoothing, stored as additive bias on logits
+
+**Results** (ranked by val_bpb):
+
+
+| Rank | Strategy                          | val_bpb    | Train@1 | Train@25 | Train@200 | Time   |
+| ---- | --------------------------------- | ---------- | ------- | -------- | --------- | ------ |
+| 1    | **bigram_emb**                    | **2.3917** | 6.852   | 5.116    | 3.785     | 75s    |
+| 2    | bigram_emb_plus_bias              | 2.4256     | 6.000   | 5.442    | 3.820     | 78s    |
+| 3    | baseline                          | 2.4291     | 6.943   | 5.348    | 3.903     | 71s    |
+| 4    | unigram_bias                      | 2.4300     | 6.019   | 5.602    | 3.859     | 68s    |
+| 5    | bigram_emb_plus_bias_plus_circuit | 2.4346     | 6.000   | 5.346    | 3.852     | 1410s* |
+
+
+*Last strategy ran slow due to Mac thermal throttling — ignore time, focus on bpb.
+
+**Key findings**:
+
+- **bigram_emb is the clear winner** (2.3917 vs baseline 2.4291): **-0.037 bpb**, 3.7× larger than the full_circuit gain from the attention sweep. Bigram SVD embeddings give the model a massive head start on token similarity structure.
+- **unigram_bias alone barely helps** (2.4300 vs 2.4291): only -0.001 bpb at step 200, despite a dramatic step-1 advantage (6.019 vs 6.943). The model learns the unigram distribution very quickly anyway — the bias front-loads it but doesn't improve the endpoint.
+- **Adding bias to bigram_emb HURTS** (2.4256 vs 2.3917): the combination is worse than bigram_emb alone. The bias likely interferes with the embedding's learned logit structure — the bigram SVD embeddings already implicitly encode frequency information through their norms/directions.
+- **Adding circuit init to bias+emb also hurts** (2.4346): the full combo is the worst of the new strategies. This confirms the P1.5 concern — init components can interfere.
+- **bigram_emb converges faster AND better**: train_loss at step 200 is 3.785 vs baseline 3.903, and val_bpb gap is the largest we've seen.
+
+**Interpretation**: The bigram SVD embedding init is by far the most impactful technique we've found. It works because it gives the tied embedding/output matrix a structure where token dot products approximate PMI — the model starts knowing which tokens co-occur. The unigram bias is redundant because the embedding norms already capture frequency information after training for a few steps. The interference between bias and embeddings suggests they're competing to explain the same variance.
+
+**Action items**:
+
+- ~~bigram_emb is the new default to beat~~ → see next experiment
+- Drop unigram_bias as a standalone strategy (redundant)
+- The P1.5 ablation concern is validated: **test combinations carefully, don't assume additivity**
+- ~~Next: try bigram_emb + full_circuit (without bias)~~ → done, see below
+
+---
+
+### 2026-03-22: bigram_emb + full_circuit (no bias) ablation
+
+**Goal**: Test whether circuit init is additive with bigram embeddings (without the interfering bias).
+
+**Results**:
+
+
+| Strategy                    | val_bpb    | vs baseline | vs bigram_emb |
+| --------------------------- | ---------- | ----------- | ------------- |
+| baseline                    | 2.4289     | —           | —             |
+| bigram_emb                  | 2.3941     | -0.035      | —             |
+| **bigram_emb_plus_circuit** | **2.3876** | **-0.041**  | **-0.007**    |
+
+
+**Key findings**:
+
+- **Circuit init IS additive with bigram embeddings** — unlike the bias, which interfered. The -0.007 from circuit init on top of bigram_emb is consistent with the -0.010 from the first attention sweep (full_circuit vs baseline). They encode different structure in different parts of the model.
+- **bigram_emb_plus_circuit is the new best** at 2.3876 bpb (-0.041 vs baseline)
+- The interference was specifically between **unigram bias and bigram embeddings** (both operate on the logit/embedding space). Circuit init operates on attention weights — orthogonal to the embedding init.
+- Train loss at step 200: bigram_emb_plus_circuit (3.790) ≈ bigram_emb (3.787) — the val_bpb gap suggests circuit init helps generalization more than raw training loss.
+
+**Current best recipe**: bigram SVD embedding init + full_circuit attention init (no unigram bias)
+
+---
+
+### 2026-03-22: P2 (RoPE circuit) and P5a (L1 regularization)
+
+**Goal**: Test RoPE-aware previous-token head construction (P2) and L1 sparsity regularization (P5a).
+
+**P2 construction**: In layers 0-1, KV group 0 gets a RoPE-aware previous-token head:
+- Q direction: (1,0) per frequency pair → position-only query
+- K direction: (cos(θ_j), -sin(θ_j)) per pair → pre-rotated by -1 position
+- After RoPE, dot product = Σ cos(θ_j * (Δ-1)), peaked at Δ=1 (previous token)
+- Measured sharpness: 35% attention on prev token, 23% self, 23% two-back at seq position 10
+- Remaining heads use standard full_circuit init
+
+**P5a implementation**: L1 penalty (λ=1e-5) added to loss on all 2D+ weight matrices.
+
+**Results**:
+
+| Strategy | val_bpb | Train@200 | Compressed Size |
+|----------|---------|-----------|-----------------|
+| bigram_emb_plus_circuit (current best) | **2.3891** | 3.787 | baseline |
+| bigram_emb_plus_rope_circuit (P2) | 2.4026 | 3.800 | — |
+| bigram_emb_plus_circuit_l1 (P5a) | 2.8523* | 4.693 | — |
+
+*L1 int8 roundtrip val_bpb=2.8523 is much worse — but note the pre-roundtrip val was 2.9427. The gap (0.09) is much smaller than baseline's gap (~0.001), suggesting L1 does help compressibility, just at a huge quality cost with λ=1e-5.
+
+**Key findings**:
+- **P2 (RoPE circuit) is WORSE than generic full_circuit** (2.4026 vs 2.3891): -0.014 bpb regression. The rank-1 positional-only QK projection removes content-awareness from 2 heads per layer 0-1, which hurts more than the positional bias helps. The generic full_circuit's identity QK (which biases toward content similarity) is more valuable than explicit position-based attention.
+- **P5a (L1) badly hurts quality** (2.8523 vs 2.3891): λ=1e-5 is far too aggressive. The model can't learn effectively under that much sparsity pressure in 200 steps. Need to try much smaller λ (1e-7, 1e-8) or apply L1 only in the later half of training.
+- **The generic full_circuit remains the best attention init** — attempts to make it more specific (RoPE-aware) or add training modifications (L1) haven't improved on it.
+
+**Lessons**:
+- Content-aware attention (identity QK) > position-aware attention (RoPE offset). This makes sense for language modeling where "what comes next" depends more on what the current token IS than where it IS.
+- L1 regularization needs careful tuning — the compression benefit exists (smaller roundtrip gap) but the quality hit at λ=1e-5 is catastrophic. A gentler schedule (ramp up L1 during warmdown) might work.
+
+---
+
 ## Planned Experiments
 
-Priority ordering revised based on review feedback. Key strategic insight: pursue
-init engineering (P3/P1/P2) and compression engineering (P5a) in parallel — these
-are complementary axes with different ceilings.
+**Current best recipe**: bigram SVD embeddings + full_circuit attention init (no bias) = **2.3891 bpb** (-0.040 vs baseline)
 
-### P3: Log-unigram output bias
-**Priority: HIGH (do first)** — Lowest-effort, highest-certainty win.
-- Pre-compute token frequencies from FineWeb train shards
-- Set output bias to `log(freq_i / total)` — 1024 floats = 4KB, negligible
-- Current architecture has no output bias (tied embeddings) — add a bias vector
-- Every step the model spends learning "the" > "xylophone" is a step wasted
-- The unigram distribution is the single largest source of predictable cross-entropy
+**Focus**: engineered weights — structures we can compute from corpus statistics or
+linguistic priors and express as code (zero artifact bytes). Training modifications
+are secondary; the contest's training loop is already well-optimized.
 
-### P1: Bigram-informed embedding init
-**Priority: HIGH** — Encode actual FineWeb corpus statistics into weights.
-- Compute 1024×1024 bigram co-occurrence matrix from FineWeb train shards
-- SVD → top-512 singular vectors → initialize tied embedding matrix
-- **Important**: with tied embeddings, this sets both input and output projection.
-  SVD of co-occurrence gives vectors where dot products approximate PMI — reasonable
-  embedding space but may have weird norm properties interacting with RMSNorm.
-  Normalize each row to unit norm after SVD, store frequency info separately via P3 bias.
-  Embeddings encode *similarity structure*, bias encodes *frequency structure* — cleaner separation.
-- Combine with full_circuit attention init from the sweep
+### E1: Trigram/n-gram statistics in MLP weights
 
-### P2: RoPE-aware induction circuit construction
-**Priority: HIGH** — Our identity_qk was generic. This is the specific formula.
-- Layer 1: previous-token head via RoPE offset — pick the highest-frequency RoPE pair (θ_i),
-  set W_Q and W_K to project onto those 2 dimensions. RoPE rotation naturally creates offset-1 preference.
-- Layer 2: induction head via K-composition — keys read "what preceded me" from layer 1's OV output,
-  queries read "who am I" from content embedding
-- Uses 2 of 72 total heads — minimal capacity cost
-- **QK-norm complication**: with RMSNorm on Q and K, effective attention logit is
-  `(Q/||Q|| . K/||K||) * q_gain * sqrt(d_head)`. Only *direction* matters, not magnitude.
-  For the prev-token head, projecting onto just 2 of 64 dims means q_gain needs to be large
-  enough that this head's attention is sharp. Prototype on paper first.
-- See WEIGHT_ENGINEERING.md "Hand-coding attention circuits" section
+**Priority: HIGH** — Bigram embeddings gave our biggest win. MLP layers are the natural
+home for higher-order n-gram patterns.
 
-### P1.5: Combined init ablation
-**Priority: HIGH (run after P3+P1+P2 are individually implemented)** — Verify components are additive.
-- Stack P3 + P1 + P2 + full_circuit incrementally
-- The mimetic result already showed init strategies can interfere unexpectedly
-- Test each combination: baseline, +P3, +P3+P1, +P3+P1+P2, +P3+P1+P2+full_circuit
-- If any combination is worse than its subset, investigate why
+- Geva et al. showed MLP layers act as key-value memories: each neuron matches an input
+  pattern (via W_up row) and produces an output (via W_down column)
+- Compute top-K most frequent trigrams from FineWeb
+- For each trigram (a,b,c): engineer an MLP neuron in layer 1 whose W_up row has high
+  dot product with the bigram embedding of (a,b) context, and whose W_down column
+  pushes the logit of token c
+- relu² activation means neurons are naturally sparse — a few hand-coded neurons won't
+  interfere with the rest
+- Start with layer 1 MLP (processes output of first attention layer)
 
-### P5a: Compression via L1 regularization / gradual magnitude pruning
-**Priority: HIGH (run in parallel with init work)** — Potentially larger gains than init.
-- full_circuit already compressed 13% smaller (4.7MB vs 5.4MB int8+zlib)
-- Add L1 regularization or gradual magnitude pruning during training — easy to implement
-- If we achieve 2-3× better compression, we can fit **25-30M params** in 16MB instead of 17M
-- That model size increase could be worth far more than any init trick
-- Test: measure compressed size vs val_bpb tradeoff at different sparsity levels
+### E2: Skip-trigram attention OV circuits
 
-### P7: MLP initialization
-**Priority: MEDIUM** — Sweep was all attention-focused, but MLPs encode n-gram statistics.
-- Geva et al. showed MLP layers act as key-value memories
-- relu² activation means MLP neurons are very sparse by default
-- Initialize a few MLP neurons in layer 1 to detect high-frequency bigram patterns:
-  input weights match bigram embedding directions (from P1's SVD)
-- Lower priority because MLP structure is less well-characterized than attention circuits
+**Priority: HIGH** — Encode common [A]...[B]→[C] patterns into attention heads.
 
-### P4: Longer runs to validate init gap
-**Priority: LOW** — Better to spend compute on P1/P2/P3 which have higher ceilings.
-- If bigram embeddings + full_circuit show a clear gap at 200 steps, that's validation enough
-- Don't need a separate 1000-step confirmation of full_circuit alone
-- Revisit if P1+P2+P3 results are ambiguous
+- The OV circuit of an attention head determines what information moves when attention fires
+- W_E^T · W_OV · W_E tells how attended tokens affect logits (see CIRCUIT_INIT.md)
+- Compute top skip-bigrams from FineWeb: which token pairs (A,B) frequently co-occur
+  at distances 2-10, and what token C follows B in those contexts
+- Engineer 1-2 OV circuits per layer to boost P(C|attended A, current B)
+- This is the "copy + transform" circuit that the Anthropic papers describe
 
-### P5b: ALBERT-style weight sharing
-**Priority: LOW** — More invasive architecture change, test after P5a.
-- Share attention weights across all 9 layers — store 1 copy instead of 9
-- Group FFN into 3 groups of 3 layers — store 3 copies instead of 9
-- Freed budget enables wider d_model (768?) or more layers
-- Risk: may hurt final quality even if compression improves
+### E3: Per-head q_gain from trained model analysis
 
-### P6: Weight subcloning from GPT-2
-**Priority: LOW** — Vocabulary mismatch is a deeper problem than just remapping.
-- GPT-2's weights are optimized for 50k-token distribution; after slicing to 1024 tokens,
-  internal representations are organized around distinctions that don't exist in our vocabulary
-- 1024-token BPE has very different granularity (subword fragments, common short words)
-  than GPT-2's token space
-- The 4× convergence claim is for *matched vocabulary* subcloning
-- Revisit only if P1-P5a don't pan out
+**Priority: HIGH** — Simple, zero extra parameters.
+
+- Our analysis found trained models have different q_gain-like behavior per head and layer
+- Extract the effective attention temperature per head from our head_behavior.json
+  (entropy scores vary significantly: some heads are sharp, others diffuse)
+- Set per-head q_gain values at init to match trained model statistics
+- Currently q_gain is uniform 1.5 for all heads — specializing it could help
+
+### E4: Bigram-informed first-layer attention
+
+**Priority: MEDIUM** — Make the first attention layer directly process bigram information.
+
+- Layer 0 attention sees the embedded tokens before any processing
+- With bigram SVD embeddings, the dot product of adjacent token embeddings already
+  encodes bigram PMI — but the attention layer needs the right QK circuit to use it
+- Engineer layer 0's QK to amplify the bigram signal: W_Q and W_K project onto the
+  top-k bigram SVD dimensions (where most co-occurrence info lives)
+- The OV circuit then copies the attended token's representation
+
+### E5: Engineered embedding norm structure
+
+**Priority: MEDIUM** — Token frequency encoded in embedding geometry.
+
+- With tied embeddings, output logit = x · emb[token]. Token embedding norms directly
+  affect how likely each token is to be predicted
+- Currently our bigram SVD embeddings have unit norms (we normalized)
+- Instead: set embedding norms proportional to sqrt(frequency) or log(frequency)
+- Common tokens get larger embeddings → naturally higher logits → implicitly encodes
+  unigram distribution without a separate bias parameter
+- This is the "cleaner" version of the P3 unigram bias that failed
+
+### E6: Depth-varying attention structure from analysis
+
+**Priority: MEDIUM** — Use our cross-model analysis to set different init per layer.
+
+- Our analysis showed clear layer-position trends: early layers have more previous-token
+  and positional heads, late layers have more copy and content heads
+- Set different full_circuit parameters per layer: stronger identity QK in later layers
+  (where copy heads dominate), weaker in early layers
+- Use the actual per-layer OV identity cosine and QK decay rates from summaries.json
+
+### P4: Longer runs / CUDA validation
+
+**Priority: LOW (until we exhaust weight engineering ideas)**
+
+- bigram_emb_plus_circuit shows consistent -0.040 bpb gap over 200 steps
+- Run on CUDA with full data when ready for leaderboard submission
+
