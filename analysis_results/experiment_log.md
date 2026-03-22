@@ -176,69 +176,82 @@ like GPT-2 is valid *only if* the resulting weights compress within budget after
 
 ---
 
+### 2026-03-22: E3 — Depth-varying circuit from Pythia-70M statistics
+
+**Goal**: Replace constant full_circuit parameters with depth-varying values fitted
+from Pythia-70M's actual weight statistics.
+
+**Pythia-70M measurements** (512d, 8 heads, 6 layers):
+- OV identity cosine: 0.01 → -0.02 → -0.07 → 0.19 → 0.32 → **0.83** (strong depth trend)
+- QK identity cosine: ~0 everywhere with high variance (content-specific, not generic)
+- Q/K norm ratio: ~1.0 early → 4.9 → 11.5 → 5.3 later (effective q_gain increases)
+- Q norms: 7→7→6→22→67→44 (explode in later layers)
+- MLP top-1024/2048: 56-64% energy (cropping to half loses significant capacity)
+- Pythia-70M BPB on test text: ~1.00 (reference point; 70M params, 50k vocab)
+
+**depth_circuit parameters**: OV identity ramps 0→0.8 quadratically with depth,
+beta_qk reduced from 0.3 to 0.05 (matching Pythia's near-zero QK identity),
+q_gain ramps from 1.5 to 3.0, depth_scale increases with layer position.
+
+**Results**:
+
+| Strategy | val_bpb | Train@200 |
+|----------|---------|-----------|
+| bigram_emb_plus_circuit (constant) | **2.3864** | 3.788 |
+| bigram_emb_plus_depth_circuit | 2.3919 | 3.777 |
+
+**Key findings**:
+- **Depth-varying is slightly worse** (-0.006 bpb regression) despite better train loss
+- Reducing beta_qk from 0.3 to 0.05 hurts — our smaller model benefits from the identity QK
+  bias even though Pythia-70M didn't develop strong QK identity. This may be because Pythia
+  had 6 layers to develop content-specific QK circuits; our 9-layer model with only 200 training
+  steps hasn't had time, so the identity bias is still useful as a starting point.
+- Depth-varying OV identity + q_gain didn't compensate for the QK regression
+- **Copying trained model geometry doesn't always transfer** — model size, training duration,
+  and architecture differences (GQA, relu², QK-norm) mean our optimal init differs from
+  Pythia's converged state
+
+**Current best remains**: `bigram_emb_plus_circuit` = **2.3864 bpb**
+
+---
+
+### 2026-03-22: E5 — Frequency-scaled embedding norms
+
+**Goal**: Encode token frequency in embedding norms (sqrt(freq) scaling) instead of
+uniform unit norms. Common tokens get larger embeddings → higher logits.
+
+**Results**:
+
+| Strategy | val_bpb |
+|----------|---------|
+| bigram_emb_plus_circuit (unit norms) | **2.3855** |
+| bigram_emb_freq_norm_plus_circuit | 2.3933 |
+| bigram_emb_freq_norm (no circuit) | 2.4002 |
+
+**Finding**: Frequency norms hurt, same pattern as unigram bias. The model applies
+`RMSNorm(embedding)` at input, which normalizes away magnitude. And with tied embeddings,
+uniform-norm directions work better for the output dot products. Frequency information
+is redundant — the model learns it within a few steps regardless.
+
+**Current best remains**: `bigram_emb_plus_circuit` = **2.3855 bpb**
+
+---
+
 ## Planned Experiments
 
-**Current best recipe**: bigram SVD embeddings + full_circuit attention init (no bias) = **2.3891 bpb** (-0.040 vs baseline)
+**Current best recipe**: bigram SVD embeddings + full_circuit attention init (no bias) = **2.3855 bpb** (-0.043 vs baseline)
 
-**Focus**: engineered weights expressed as code (zero artifact bytes). Two sources are
-allowed: (1) corpus statistics computed from FineWeb at training start, and (2) parametric
-formulas derived from studying pre-trained model geometry. Downloading pre-trained weights
-at training time is against the spirit of the contest.
-
-**Key lesson from completed experiments**: generic structural geometry works (bigram SVD,
-identity QK, copy OV), specific linguistic encodings don't (RoPE previous-token, unigram
-bias). This suggests we should extract *quantitative* structure from trained models and
-express it as parametric curves, not try to hand-encode specific linguistic patterns.
-
-### E3: Quantitative weight geometry from trained models
-
-**Priority: HIGH** — Measure actual weight structure, express as parametric code.
-
-- Rather than hand-tuning full_circuit parameters (r_qk=0.06, beta_qk=0.3, etc.), fit
-  them quantitatively from our model analysis data
-- Measure actual W_Q row norms per head across Pythia/SmolLM/GPT-2 → set per-head q_gain
-  (currently uniform 1.5 — specializing costs zero extra params)
-- Fit identity_strength(layer_position) as a simple curve from the per-layer QK/OV identity
-  cosine data in summaries.json and head_behavior.json
-- Fit spectral decay rates per layer position (our analysis has this data)
-- This is using the models as *references for parametric formulas*, not weight transfer
-
-### E5: Embedding norm structure from corpus statistics
-
-**Priority: HIGH** — Cheap, uses FineWeb data we already have.
-
-- With tied embeddings, token embedding norms directly affect prediction probability
-- Currently our bigram SVD embeddings have unit norms (we normalized them)
-- Instead: scale norms proportional to sqrt(frequency) or log(frequency) from FineWeb
-- Common tokens get larger embeddings → naturally higher logits → encodes unigram
-  distribution in the embedding geometry itself
-- Unlike the additive unigram bias (which interfered), this preserves the relative
-  *directions* from bigram SVD while encoding *magnitude* from frequencies
-- Very quick to test — just change the normalization in bigram_emb init
-
-### E1: Trigram statistics in MLP weights
-
-**Priority: MEDIUM** — Higher-order n-grams, but speculative.
-
-- Compute top-K trigrams from FineWeb at training start
-- Engineer MLP neurons in layer 1 whose W_up rows match bigram context and W_down
-  columns push the trigram completion token
-- Risk: fragile, may interfere with learning (same pattern as P2/unigram_bias failures)
-- Only worth trying if E3/E5 gains plateau
-
-### E6: Depth-varying init from cross-model curves
-
-**Priority: MEDIUM** — Use quantitative analysis data, not hand-tuned knobs.
-
-- Extract per-layer QK identity cosine, OV decay rate, effective rank from summaries.json
-- Fit smooth curves: identity_strength(layer_pos), decay_rate(layer_pos), etc.
-- Apply as depth-varying parameters in full_circuit init
-- This is the quantitative version of what full_circuit does with fixed constants
+**Key lessons so far**:
+- Bigram SVD embeddings = biggest single win (-0.037 bpb)
+- Generic structural attention init (identity QK, copy OV) adds ~-0.006 on top
+- Specific encodings consistently fail: RoPE previous-token, unigram bias, freq norms, depth-varying params from Pythia
+- Frequency/unigram information is redundant — the model learns it in a few steps; RMSNorm washes out magnitude
+- Incremental parameter tuning (E3, E5, E6) has hit diminishing returns
 
 ### P4: Longer runs / CUDA validation
 
-**Priority: LOW (until we exhaust weight engineering ideas)**
+**Priority: LOW (until we have new ideas worth validating at scale)**
 
-- bigram_emb_plus_circuit shows consistent -0.040 bpb gap over 200 steps
+- bigram_emb_plus_circuit shows consistent -0.043 bpb gap over 200 steps
 - Run on CUDA with full data when ready for leaderboard submission
 

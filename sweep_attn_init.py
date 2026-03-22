@@ -30,6 +30,9 @@ ALL_STRATEGIES = [
     "bigram_emb",
     "full_circuit",
     "bigram_emb_plus_circuit",
+    "bigram_emb_plus_depth_circuit",
+    "bigram_emb_freq_norm",
+    "bigram_emb_freq_norm_plus_circuit",
 ]
 
 _strat_override = os.environ.get("STRATEGIES", "")
@@ -64,11 +67,27 @@ def apply_weight_init(model, strategy):
         if emb_path.exists():
             emb_init = np.load(str(emb_path))  # (1024, 512) unit-norm rows
             tied_std = 0.005
-            emb_init = emb_init * tied_std * (512 ** 0.5)
+            if "freq_norm" in strategy:
+                # E5: scale embedding norms by token frequency
+                freq_path = Path("analysis_results/log_unigram_bias.npy")
+                if freq_path.exists():
+                    log_freqs = np.load(str(freq_path))  # log(freq/total)
+                    # Convert to relative scale: sqrt(freq) normalized so mean norm matches tied_std
+                    freqs = np.exp(log_freqs)
+                    norm_scale = np.sqrt(freqs / freqs.mean()).astype(np.float32)
+                    # Clip extremes (dead tokens would get ~0 norm)
+                    norm_scale = np.clip(norm_scale, 0.1, 5.0)
+                    emb_init = emb_init * norm_scale[:, None] * tied_std * (512 ** 0.5)
+                else:
+                    emb_init = emb_init * tied_std * (512 ** 0.5)
+            else:
+                emb_init = emb_init * tied_std * (512 ** 0.5)
             model.tok_emb.weight = mx.array(emb_init).astype(COMPUTE_DTYPE)
 
     # ── Full circuit attention init ──
-    if "circuit" in strategy:
+    if "depth_circuit" in strategy:
+        _init_depth_circuit(model)
+    elif "circuit" in strategy:
         _init_full_circuit(model)
 
 
@@ -128,6 +147,104 @@ def _init_full_circuit(model):
         attn.c_k.weight = mx.array(W_K) + mx.random.normal(W_K.shape) * noise_scale
         attn.c_v.weight = mx.array(W_V) + mx.random.normal(W_V.shape) * noise_scale
         attn.proj.weight = mx.array(W_O) * depth_scale + mx.random.normal(W_O.shape) * noise_scale * depth_scale
+
+
+def _init_depth_circuit(model):
+    """Depth-varying circuit init informed by Pythia-70M weight statistics.
+
+    Key patterns from Pythia-70M (6 layers, 512d, 8 heads):
+    - OV identity cosine: ~0 early, 0.83 at last layer (strong depth trend)
+    - QK identity cosine: ~0 everywhere (content-specific, not generic identity)
+    - Q/K norm ratio: ~1 early, 5-11 in later layers (effective q_gain increases)
+    - Spectral decay: consistent across layers
+
+    Parametric curves fitted to these patterns, applied to our 9-layer model.
+    """
+    import numpy as np
+
+    dim = model.blocks[0].attn.c_q.weight.shape[0]
+    num_heads = model.blocks[0].attn.num_heads
+    num_kv_heads = model.blocks[0].attn.num_kv_heads
+    head_dim = dim // num_heads
+    n_layers = len(model.blocks)
+    kv_dim = num_kv_heads * head_dim
+    group_size = num_heads // num_kv_heads
+
+    r_qk = 0.06
+    r_ov = 0.04
+    scale = 1.0 / dim**0.5
+    noise_scale = 0.01
+
+    for li, block in enumerate(model.blocks):
+        attn = block.attn
+        pos = li / max(n_layers - 1, 1)  # 0 to 1
+
+        # Depth-varying parameters from Pythia-70M patterns:
+        # OV identity strength: 0 at pos=0, ~0.8 at pos=1 (cubic ramp)
+        ov_identity = 0.8 * (pos ** 2)
+        # QK identity bias: near zero everywhere (Pythia QK_id was ~0)
+        # Reduce from 0.3 (full_circuit) to near-zero
+        beta_qk = 0.05
+        # Depth scaling: larger OV contribution in later layers
+        depth_scale = (0.05 + 0.15 * pos) / n_layers**0.5
+
+        basis = np.linalg.qr(np.random.randn(dim, dim).astype(np.float32))[0]
+
+        W_Q = np.zeros((dim, dim), dtype=np.float32)
+        W_K = np.zeros((kv_dim, dim), dtype=np.float32)
+        W_V = np.zeros((kv_dim, dim), dtype=np.float32)
+        W_O = np.zeros((dim, dim), dtype=np.float32)
+
+        for g in range(num_kv_heads):
+            heads_in_group = range(g * group_size, (g + 1) * group_size)
+            g_start = g * head_dim
+            P_g = basis[:, g_start:g_start+head_dim]
+
+            # K: spectral decay + small identity bias
+            s_k = np.exp(-r_qk * np.arange(head_dim)).astype(np.float32)
+            K_struct = P_g * s_k * scale
+            K_id = np.zeros((dim, head_dim), dtype=np.float32)
+            K_id[g_start:g_start+head_dim, :] = np.eye(head_dim) * beta_qk * scale
+            W_K[g_start:g_start+head_dim, :] = (K_struct + K_id).T
+
+            # V/O: identity strength increases with depth
+            s_v = np.exp(-r_ov * np.arange(head_dim)).astype(np.float32)
+            # Blend between random orthogonal and identity based on ov_identity
+            V_random = P_g * np.sqrt(s_v) * scale
+            V_identity = np.zeros((dim, head_dim), dtype=np.float32)
+            V_identity[g_start:g_start+head_dim, :] = np.eye(head_dim) * scale
+            V_blended = (1 - ov_identity) * V_random + ov_identity * V_identity
+            W_V[g_start:g_start+head_dim, :] = V_blended.T
+
+            for h in heads_in_group:
+                h_start = h * head_dim
+                P_h = basis[:, h_start:h_start+head_dim]
+
+                s_q = np.exp(-r_qk * np.arange(head_dim)).astype(np.float32)
+                Q_struct = P_h * s_q * scale
+                Q_id = np.zeros((dim, head_dim), dtype=np.float32)
+                Q_id[h_start:h_start+head_dim, :] = np.eye(head_dim) * beta_qk * scale
+                W_Q[h_start:h_start+head_dim, :] = (Q_struct + Q_id).T
+
+                O_random = P_g * np.sqrt(s_v) * scale
+                O_identity = np.zeros((dim, head_dim), dtype=np.float32)
+                O_identity[g_start:g_start+head_dim, :] = np.eye(head_dim) * scale
+                O_blended = (1 - ov_identity) * O_random + ov_identity * O_identity
+                W_O[:, h_start:h_start+head_dim] = O_blended
+
+        attn.c_q.weight = mx.array(W_Q) + mx.random.normal(W_Q.shape) * noise_scale
+        attn.c_k.weight = mx.array(W_K) + mx.random.normal(W_K.shape) * noise_scale
+        attn.c_v.weight = mx.array(W_V) + mx.random.normal(W_V.shape) * noise_scale
+        attn.proj.weight = mx.array(W_O) * depth_scale + mx.random.normal(W_O.shape) * noise_scale * depth_scale
+
+    # Depth-varying q_gain: ~1.5 early, higher in later layers
+    # Pythia pattern: Q/K ratio ~1 in L0-2, ~5-11 in L3-5
+    # For our 9 layers with QK-norm (where q_gain is explicit):
+    for li, block in enumerate(model.blocks):
+        pos = li / max(n_layers - 1, 1)
+        # Ramp from 1.5 to 3.0 over depth
+        gain = 1.5 + 1.5 * (pos ** 1.5)
+        block.attn.q_gain = mx.full((num_heads,), gain, dtype=mx.float32)
 
 # ─── End engineered weight init ───────────────────────────────────────────────
 '''
