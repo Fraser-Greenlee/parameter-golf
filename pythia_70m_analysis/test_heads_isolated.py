@@ -84,9 +84,11 @@ def compute_loss(model, tokenizer, texts):
 
 def compute_attention_stats(model_full, model_patched, tokenizer, texts,
                             layer, head, is_xsa=False):
-    """Compute attention agreement and stats for a specific head."""
+    """Compute attention agreement, KL divergence, and head activity stats."""
     agree = 0
     total = 0
+    kl_divs = []
+    head_output_norms = []  # norm of attention-weighted output (head activity)
     stats_full = {"prev": 0, "self": 0, "bos": 0}
     stats_eng = {"prev": 0, "self": 0, "bos": 0}
 
@@ -100,20 +102,41 @@ def compute_attention_stats(model_full, model_patched, tokenizer, texts,
             out_full = model_full(**inputs, output_attentions=True)
             out_patched = model_patched(**inputs, output_attentions=True)
 
-        attn_full = out_full.attentions[layer][0, head].numpy()
+        attn_full = out_full.attentions[layer][0, head].numpy()  # [seq, seq]
         attn_eng_all = out_patched.attentions[layer][0].numpy()
         if is_xsa:
             attn_eng_all = apply_xsa_to_attention(attn_eng_all, layer)
         attn_eng = attn_eng_all[head]
 
+        # Measure head output norm from the TRAINED model to gauge activity.
+        # head_output = attn @ V(x), but we approximate with just the attention
+        # entropy -- low entropy = sharp/active, high entropy = diffuse/inactive.
+        # More directly: use the full-model hidden states to get V, then compute
+        # ||attn @ V||. But that requires hooking into internals.
+        # Instead, use the attention entropy as an activity proxy:
+        # near-uniform attention (high entropy) = effectively inactive.
+
         for q in range(1, seq_len):
             row_f = attn_full[q, :q + 1]
             row_e = attn_eng[q, :q + 1]
+
+            # Top-1 agreement
             top1_f = int(np.argmax(row_f))
             top1_e = int(np.argmax(row_e))
             if top1_f == top1_e:
                 agree += 1
             total += 1
+
+            # KL divergence: KL(trained || engineered)
+            # Clip to avoid log(0)
+            row_f_safe = np.clip(row_f, 1e-10, 1.0)
+            row_e_safe = np.clip(row_e, 1e-10, 1.0)
+            kl = float((row_f_safe * np.log(row_f_safe / row_e_safe)).sum())
+            kl_divs.append(kl)
+
+            # Trained head entropy (activity proxy)
+            ent = -float((row_f_safe * np.log(row_f_safe)).sum())
+            head_output_norms.append(ent)
 
             if top1_f == q: stats_full["self"] += 1
             if top1_f == q - 1: stats_full["prev"] += 1
@@ -123,8 +146,18 @@ def compute_attention_stats(model_full, model_patched, tokenizer, texts,
             if top1_e == 0: stats_eng["bos"] += 1
 
     t = max(total, 1)
+    entropies = np.array(head_output_norms) if head_output_norms else np.array([0.0])
+    # Max possible entropy for a uniform distribution over seq_len positions
+    max_entropy = np.log(256)  # approximate (max seq len we use)
+    # Activity score: 1 = very sharp/active, 0 = uniform/inactive
+    activity = 1.0 - (entropies.mean() / max_entropy)
+
     return {
         "agreement": agree / t,
+        "kl_div": float(np.mean(kl_divs)) if kl_divs else 0.0,
+        "kl_div_median": float(np.median(kl_divs)) if kl_divs else 0.0,
+        "trained_entropy": float(entropies.mean()),
+        "activity": float(activity),
         "full_prev": stats_full["prev"] / t,
         "full_self": stats_full["self"] / t,
         "full_bos": stats_full["bos"] / t,
@@ -213,8 +246,15 @@ def write_results(results, baseline_loss):
         "Each row: replace ONE head in trained Pythia-70M with our engineered version,",
         "measure the loss increase and attention pattern agreement.",
         "",
-        "| Layer | Head | Circuit | XSA | Loss Delta | Agree | Trained prev/self/bos | Eng prev/self/bos |",
-        "|-------|------|---------|-----|------------|-------|----------------------|-------------------|",
+        "**Metrics:**",
+        "- **Loss Delta**: nats increase when replacing this head (lower = better engineering)",
+        "- **Agree**: fraction of positions where top-1 attended token matches trained",
+        "- **KL Div**: mean KL(trained || engineered) across attention distributions (lower = more similar)",
+        "- **Activity**: 1 = sharp/focused attention (active head), 0 = near-uniform (inactive/BOS-sink)",
+        "- **Trained Ent**: mean entropy of the trained head's attention distribution",
+        "",
+        "| Layer | Head | Circuit | XSA | Loss Delta | Agree | KL Div | Activity | Trained Ent |",
+        "|-------|------|---------|-----|------------|-------|--------|----------|-------------|",
     ]
 
     for r in results:
@@ -223,52 +263,58 @@ def write_results(results, baseline_loss):
             f"| {r['layer']} | {r['head']} | {r['circuit']:<10} | {xsa:<3} "
             f"| {r['loss_delta']:+.4f} "
             f"| {r['agreement']:.0%} "
-            f"| {r['full_prev']:.0%}/{r['full_self']:.0%}/{r['full_bos']:.0%} "
-            f"| {r['eng_prev']:.0%}/{r['eng_self']:.0%}/{r['eng_bos']:.0%} |"
+            f"| {r['kl_div']:.3f} "
+            f"| {r['activity']:.2f} "
+            f"| {r['trained_entropy']:.3f} |"
         )
 
     # Summary by circuit type
     lines.extend(["", "## Summary by Circuit Type", ""])
-    lines.append("| Circuit | Count | Mean Loss Delta | Mean Agreement | Best Head (agree) |")
-    lines.append("|---------|-------|----------------|----------------|-------------------|")
+    lines.append("| Circuit | Count | Mean Loss Delta | Mean KL Div | Mean Activity | Mean Agreement |")
+    lines.append("|---------|-------|----------------|-------------|---------------|----------------|")
     for ct in ["prev_token", "induction", "copy", "suppress", "content"]:
         entries = [r for r in results if r["circuit"] == ct]
         if not entries:
             continue
-        mean_delta = np.mean([r["loss_delta"] for r in entries])
-        mean_agree = np.mean([r["agreement"] for r in entries])
-        best = max(entries, key=lambda r: r["agreement"])
         lines.append(
-            f"| {ct:<9} | {len(entries):>5} | {mean_delta:>+14.4f} "
-            f"| {mean_agree:>14.0%} "
-            f"| L{best['layer']}_H{best['head']} ({best['agreement']:.0%}) |"
+            f"| {ct:<9} | {len(entries):>5} "
+            f"| {np.mean([r['loss_delta'] for r in entries]):>+14.4f} "
+            f"| {np.mean([r['kl_div'] for r in entries]):>11.3f} "
+            f"| {np.mean([r['activity'] for r in entries]):>13.2f} "
+            f"| {np.mean([r['agreement'] for r in entries]):>14.0%} |"
         )
 
     # Summary by layer
     lines.extend(["", "## Summary by Layer", ""])
-    lines.append("| Layer | Mean Loss Delta | Mean Agreement |")
-    lines.append("|-------|----------------|----------------|")
+    lines.append("| Layer | Mean Loss Delta | Mean KL Div | Mean Activity |")
+    lines.append("|-------|----------------|-------------|---------------|")
     for layer in range(N_LAYERS):
         lr = [r for r in results if r["layer"] == layer]
         lines.append(
-            f"| {layer} | {np.mean([r['loss_delta'] for r in lr]):>+14.4f} "
-            f"| {np.mean([r['agreement'] for r in lr]):>14.0%} |"
+            f"| {layer} "
+            f"| {np.mean([r['loss_delta'] for r in lr]):>+14.4f} "
+            f"| {np.mean([r['kl_div'] for r in lr]):>11.3f} "
+            f"| {np.mean([r['activity'] for r in lr]):>13.2f} |"
         )
 
-    # Worst and best heads
-    for label, sorted_results in [
-        ("Worst 10 Heads (largest loss increase)", sorted(results, key=lambda r: -r["loss_delta"])[:10]),
-        ("Best 10 Heads (smallest loss increase)", sorted(results, key=lambda r: r["loss_delta"])[:10]),
-    ]:
-        lines.extend(["", f"## {label}", ""])
-        lines.append("| Head | Circuit | XSA | Loss Delta | Agreement |")
-        lines.append("|------|---------|-----|------------|-----------|")
-        for r in sorted_results:
-            xsa = "yes" if r["xsa"] else ""
-            lines.append(
-                f"| L{r['layer']}_H{r['head']} | {r['circuit']} | {xsa} "
-                f"| {r['loss_delta']:+.4f} | {r['agreement']:.0%} |"
-            )
+    # Ranked by loss delta * activity (impact-weighted -- inactive heads don't matter)
+    lines.extend(["", "## All Heads Ranked by Loss Delta (with activity context)", ""])
+    lines.append("Heads with low activity are effectively inactive (BOS-sinks); their loss delta is noise.")
+    lines.append("")
+    lines.append("| Rank | Head | Circuit | XSA | Loss Delta | KL Div | Activity | Agree | Trained Ent |")
+    lines.append("|------|------|---------|-----|------------|--------|----------|-------|-------------|")
+    ranked = sorted(results, key=lambda r: -r["loss_delta"])
+    for i, r in enumerate(ranked):
+        xsa = "yes" if r["xsa"] else ""
+        inactive = " (inactive)" if r["activity"] < 0.3 else ""
+        lines.append(
+            f"| {i+1} | L{r['layer']}_H{r['head']} | {r['circuit']}{inactive} | {xsa} "
+            f"| {r['loss_delta']:+.4f} "
+            f"| {r['kl_div']:.3f} "
+            f"| {r['activity']:.2f} "
+            f"| {r['agreement']:.0%} "
+            f"| {r['trained_entropy']:.3f} |"
+        )
 
     out_path.write_text("\n".join(lines))
     print(f"\nResults written to {out_path}")
@@ -315,7 +361,8 @@ def main():
             circuit = r["circuit"]
             xsa_tag = " [XSA]" if r["xsa"] else ""
             print(f"  L{layer_idx}_H{head_idx} ({circuit}{xsa_tag}): "
-                  f"delta={r['loss_delta']:+.4f}, agree={r['agreement']:.0%}")
+                  f"delta={r['loss_delta']:+.4f}, KL={r['kl_div']:.3f}, "
+                  f"act={r['activity']:.2f}, agree={r['agreement']:.0%}")
 
         elapsed = time.time() - t0
         rate = elapsed / ((layer_idx + 1) * N_HEADS)
