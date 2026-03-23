@@ -20,16 +20,16 @@ Each head was tested by replacing it in the trained model and measuring loss on 
 | Suppress | L1_H0/H5, L2_H2/H6 | Low-scale QK | +0.024 | 1.8 | 0.53 |
 | Content | 30 heads across L0-L4 | Moderate identity QK | +0.061 | 2.2 | 0.58 |
 
-**Worst individual heads** (highest loss delta, with activity context):
+**Worst individual heads** (highest loss delta, engineering frontier):
 
 | Head | Circuit | Delta | KL | Activity | Issue |
 |------|---------|-------|-----|----------|-------|
-| L2_H1 | prev_token | +2.22 | 3.4 | 0.83 | Test harness bug (deep dive shows only +0.008) |
-| L0_H0 | content | +0.24 | 0.9 | 0.36 | Low activity but still costs |
+| L0_H0 | content | +0.24 | 0.9 | 0.36 | Diffuse but still costs -- early-layer content routing |
 | L0_H7 | content | +0.24 | 2.3 | 0.61 | Active, learned routing our identity QK misses |
 | L0_H2 | content | +0.18 | 1.0 | 0.37 | Similar to L0_H0 |
-| L0_H1 | content | +0.16 | 2.8 | 0.70 | Most active L0 head (soft prev-token at 77%) |
+| L0_H1 | content | +0.16 | 2.8 | 0.70 | Most active L0 head (trained as soft prev-token at 77%) |
 | L5_H0 | copy | +0.11 | 21.7 | 0.96 | Huge KL but modest delta -- V/O carries the load |
+| L1_H2 | content | +0.10 | 2.4 | 0.63 | Active content head with learned features |
 
 ## Key Discoveries
 
