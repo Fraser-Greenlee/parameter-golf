@@ -47,22 +47,35 @@ Key findings:
 | Previous-token head | **DONE** | RoPE bias pre-rotation (half-half layout) | 100% prev-token (matches trained 98%) |
 | Copy heads | **DONE** | Identity QK + identity OV with exponential SV decay | 97% self-attention, strong copying |
 | Suppression heads | **DONE** | Low-scale QK (broad attention) + negative OV identity | Working, high entropy |
-| Induction heads | **PARTIAL** | K-composition via shared prev-token subspace | 50/50 self vs matching position |
+| Induction heads | **DONE** | K-composition + XSA (exclusive self-attention) | 100% induction match on repetitive text, BOS-sink fallback on non-repetitive |
 | Content heads | **DONE** | Moderate identity QK, weak OV | Default filler for unassigned heads |
 | FFN layers | **NOT STARTED** | -- | Using random init |
 | Embeddings | **NOT STARTED** | -- | Using random init |
 
+## Key Breakthrough: XSA (Exclusive Self-Attention)
+
+The induction head engineering was stuck at a 50/50 self vs induction-match tie. Both Q and K project from the prev-token head's output subspace, but the original embedding also lives there, so self-attention score (Q=K exactly) always ties with the match score.
+
+**XSA solves this completely.** By masking the attention diagonal (`attn[q,q] = -inf` before softmax) for induction heads, self-attention is eliminated and the induction match wins with 100%:
+
+```
+on@10  -> on@3  (1.00)  -- predecessor "sat" matches, attends to earlier occurrence
+the@11 -> the@4 (1.00)  -- predecessor "on" matches
+The@14 -> The@7 (1.00)  -- predecessor "." matches
+sat@9  -> BOS   (fallback) -- "dog" never appeared as predecessor, falls back to BOS
+```
+
+This exactly reproduces trained Pythia-70M behavior (induction on matches, BOS-sink on non-matches).
+
+XSA is natural for heads that never want self-attention:
+- **Induction heads**: always want a *different* position where the predecessor matched
+- **Previous-token heads**: always want position i-1, never self
+
+Copy heads and content heads keep standard attention (they benefit from self-attention).
+
+**Cost for Parameter Golf**: ~2 lines of code (boolean flag + diagonal mask), zero artifact bytes.
+
 ## What's Left
-
-### Induction heads (hardest problem)
-
-Current issue: both Q and K project from the prev-token head's output subspace in the residual stream, but the original embedding also lives there. This means self-attention score (where Q=K exactly) ties with the induction match score. The trained model resolves this through learned selectivity that pure weight construction can't easily replicate.
-
-Possible approaches:
-1. **Dedicated communication channel**: Reserve a subspace of the residual stream exclusively for inter-layer signaling. Zero out the embedding's contribution to this subspace. The prev-token head writes predecessor content there; the induction head's K reads from there.
-2. **Asymmetric Q/K projections**: Make Q read from the embedding space and K read from the prev-token OV space, with a learned alignment matrix between them.
-3. **Positional tie-breaking**: Add a mild RoPE bias to induction heads that prefers earlier positions, breaking the 50/50 tie in favor of the first occurrence.
-4. **Accept 50/50 as init**: The structural matching is correct even at 50/50. Training can sharpen it within a few steps. This may be good enough for Parameter Golf where we only need an init advantage.
 
 ### FFN engineering
 
