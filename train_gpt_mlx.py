@@ -81,6 +81,15 @@ class Hyperparameters:
     rope_base: float = float(os.environ.get("ROPE_BASE", 10000.0))
     qk_gain_init: float = float(os.environ.get("QK_GAIN_INIT", 1.5))
 
+    # Recursive soft-embedding diffusion. Defaults disable recursion (baseline unchanged).
+    recurse_train_min: int = int(os.environ.get("RECURSE_TRAIN_MIN", 1))
+    recurse_train_max: int = int(os.environ.get("RECURSE_TRAIN_MAX", 1))  # 1=disabled
+    recurse_eval: int = int(os.environ.get("RECURSE_EVAL", 1))
+    recurse_temp: float = float(os.environ.get("RECURSE_TEMP", 1.0))
+    recurse_ema: float = float(os.environ.get("RECURSE_EMA", 1.0))  # 1.0=no blending
+    recurse_step_weight: str = os.environ.get("RECURSE_STEP_WEIGHT", "linear")
+    recurse_xsa: bool = bool(int(os.environ.get("RECURSE_XSA", "0")))
+
     # Optimizer. We keep the same per-group defaults as train_gpt.py.
     beta1: float = float(os.environ.get("BETA1", 0.9))
     beta2: float = float(os.environ.get("BETA2", 0.95))
@@ -324,7 +333,7 @@ class CausalSelfAttention(nn.Module):
         self.rope = nn.RoPE(self.head_dim, traditional=False, base=rope_base)
         self.scale = self.head_dim ** -0.5
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(self, x: mx.array, use_xsa: bool = False) -> mx.array:
         bsz, seqlen, dim = x.shape
         q = self.c_q(x).reshape(bsz, seqlen, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
         k = self.c_k(x).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim).transpose(0, 2, 1, 3)
@@ -333,7 +342,14 @@ class CausalSelfAttention(nn.Module):
         q = self.rope(rms_norm(q).astype(COMPUTE_DTYPE))
         k = self.rope(rms_norm(k).astype(COMPUTE_DTYPE))
         q = q * self.q_gain.astype(q.dtype)[None, :, None, None]
-        y = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask="causal")
+        if use_xsa:
+            # XSA: causal mask with self-attention excluded (diagonal = -inf)
+            mask = mx.tril(mx.ones((seqlen, seqlen)))
+            mask = mask - mx.eye(seqlen)  # zero the diagonal
+            mask = mx.where(mask == 0, mx.array(-1e9), mx.array(0.0))
+            y = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask=mask)
+        else:
+            y = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask="causal")
         y = y.transpose(0, 2, 1, 3).reshape(bsz, seqlen, dim)
         return self.proj(y)
 
@@ -370,10 +386,10 @@ class Block(nn.Module):
         self.mlp_scale = mx.ones((dim,), dtype=mx.float32)
         self.resid_mix = mx.array(np.stack((np.ones((dim,), dtype=np.float32), np.zeros((dim,), dtype=np.float32))))
 
-    def __call__(self, x: mx.array, x0: mx.array) -> mx.array:
+    def __call__(self, x: mx.array, x0: mx.array, use_xsa: bool = False) -> mx.array:
         mix = self.resid_mix.astype(x.dtype)
         x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
-        attn_out = self.attn(self.attn_norm(x))
+        attn_out = self.attn(self.attn_norm(x), use_xsa=use_xsa)
         x = x + self.attn_scale.astype(x.dtype)[None, None, :] * attn_out
         x = x + self.mlp_scale.astype(x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
         return x
@@ -415,41 +431,75 @@ class GPT(nn.Module):
         c = self.logit_softcap
         return c * mx.tanh(logits / c)
 
-    def __call__(self, input_ids: mx.array) -> mx.array:
-        x = rms_norm(self.tok_emb(input_ids).astype(COMPUTE_DTYPE))
+    def forward_body(self, x: mx.array, use_xsa: bool = False) -> mx.array:
+        """Run transformer blocks with U-Net skip connections. Reusable for recursion."""
         x0 = x
         skips: list[mx.array] = []
-
         for i in range(self.num_encoder_layers):
-            x = self.blocks[i](x, x0)
+            x = self.blocks[i](x, x0, use_xsa=use_xsa)
             skips.append(x)
         for i in range(self.num_decoder_layers):
-            # Odd layer counts have one more decoder block than encoder block. The baseline only
-            # applies a skip connection when one exists, then runs the remaining decoder block(s)
-            # without an added skip.
             if skips:
                 x = x + self.skip_weights[i].astype(x.dtype)[None, None, :] * skips.pop()
-            x = self.blocks[self.num_encoder_layers + i](x, x0)
+            x = self.blocks[self.num_encoder_layers + i](x, x0, use_xsa=use_xsa)
         return self.final_norm(x)
 
-    def loss(self, input_ids: mx.array, target_ids: mx.array) -> mx.array:
-        # Cross-entropy over flattened tokens. We keep optional logit chunking because it is a useful
-        # memory knob on Macs, but the common path is chunk_tokens=0 (single matmul + CE).
-        x = self(input_ids).reshape(-1, self.tok_emb.weight.shape[1])
-        y = target_ids.reshape(-1)
-        if self.logit_chunk_tokens <= 0 or x.shape[0] <= self.logit_chunk_tokens:
-            logits_proj = x @ self.tok_emb.weight.astype(x.dtype).T
-            logits = self.softcap(logits_proj)
-            return nn.losses.cross_entropy(logits.astype(mx.float32), y, reduction="mean")
+    def _compute_logits(self, h: mx.array) -> mx.array:
+        """Hidden states (B*L, H) -> softcapped logits (B*L, V)."""
+        logits_proj = h @ self.tok_emb.weight.astype(h.dtype).T
+        return self.softcap(logits_proj)
 
-        loss_sum = mx.array(0.0, dtype=mx.float32)
-        n = int(x.shape[0])
-        for s in range(0, n, self.logit_chunk_tokens):
-            e = min(s + self.logit_chunk_tokens, n)
-            logits_proj = x[s:e] @ self.tok_emb.weight.astype(x.dtype).T
-            logits = self.softcap(logits_proj)
-            loss_sum = loss_sum + nn.losses.cross_entropy(logits.astype(mx.float32), y[s:e], reduction="sum")
-        return loss_sum / float(n)
+    def __call__(self, input_ids: mx.array) -> mx.array:
+        x = rms_norm(self.tok_emb(input_ids).astype(COMPUTE_DTYPE))
+        return self.forward_body(x)
+
+    def loss(self, input_ids: mx.array, target_ids: mx.array,
+             num_recurse: int = 1, recurse_temp: float = 1.0,
+             recurse_ema: float = 1.0, recurse_xsa: bool = False,
+             recurse_step_weight: str = "linear") -> mx.array:
+        B_L = input_ids.size
+        H = self.tok_emb.weight.shape[1]
+        y = target_ids.reshape(-1)
+
+        # Pass 0: standard token embedding forward
+        x = rms_norm(self.tok_emb(input_ids).astype(COMPUTE_DTYPE))
+        h = self.forward_body(x)
+        h_flat = h.reshape(-1, H)
+        logits = self._compute_logits(h_flat)
+        loss_0 = nn.losses.cross_entropy(logits.astype(mx.float32), y, reduction="mean")
+
+        if num_recurse <= 1:
+            return loss_0
+
+        # Compute step weights
+        if recurse_step_weight == "linear":
+            weights = [(t + 1) / num_recurse for t in range(num_recurse)]
+        elif recurse_step_weight == "last_1":
+            weights = [0.0] * (num_recurse - 1) + [1.0]
+        else:  # uniform
+            weights = [1.0] * num_recurse
+        w_sum = sum(weights)
+
+        total_loss = weights[0] * loss_0
+
+        # Recursive passes: logits -> soft embedding -> forward -> refined logits
+        for t in range(1, num_recurse):
+            probs = mx.softmax(mx.stop_gradient(logits) / recurse_temp, axis=-1)  # (B*L, V)
+            soft_emb = probs @ self.tok_emb.weight.astype(probs.dtype)  # (B*L, H)
+            if recurse_ema < 1.0:
+                soft_emb = (1.0 - recurse_ema) * mx.stop_gradient(h_flat) + recurse_ema * soft_emb
+            x_new = rms_norm(soft_emb.reshape(input_ids.shape[0], -1, H).astype(COMPUTE_DTYPE))
+            h = self.forward_body(x_new, use_xsa=recurse_xsa)
+            h_flat = h.reshape(-1, H)
+            logits = self._compute_logits(h_flat)
+            loss_t = nn.losses.cross_entropy(logits.astype(mx.float32), y, reduction="mean")
+            total_loss = total_loss + weights[t] * loss_t
+
+        return total_loss / w_sum
+
+    def loss_compat(self, input_ids: mx.array, target_ids: mx.array) -> mx.array:
+        """Legacy single-pass loss for backward compatibility."""
+        return self.loss(input_ids, target_ids, num_recurse=1)
 
 # ==============================================================================
 # OPTIMIZERS (MUON + ADAM SPLIT)
@@ -907,12 +957,33 @@ def main() -> None:
     # inside RoPE modules), so compiling only against trainable parameters throws "uncaptured inputs".
     # Compiling the model-bound functions and capturing the full model state fixes that while still
     # returning gradients only for trainable parameters via nn.value_and_grad(...).
-    compiled_loss = mx.compile(lambda x, y: model.loss(x, y), inputs=model.state, outputs=model.state)
-    compiled_loss_and_grad = mx.compile(
-        nn.value_and_grad(model, lambda x, y: model.loss(x, y)),
-        inputs=model.state,
-        outputs=model.state,
-    )
+    # Build loss functions that pass recursive params through.
+    # For training: num_recurse is sampled per step, so we create a wrapper.
+    import random as _random
+    _random.seed(args.seed)
+
+    def _train_loss(x, y):
+        nr = _random.randint(args.recurse_train_min, args.recurse_train_max)
+        return model.loss(x, y, num_recurse=nr, recurse_temp=args.recurse_temp,
+                          recurse_ema=args.recurse_ema, recurse_xsa=args.recurse_xsa,
+                          recurse_step_weight=args.recurse_step_weight)
+
+    def _eval_loss(x, y):
+        return model.loss(x, y, num_recurse=args.recurse_eval, recurse_temp=args.recurse_temp,
+                          recurse_ema=args.recurse_ema, recurse_xsa=args.recurse_xsa,
+                          recurse_step_weight=args.recurse_step_weight)
+
+    # Note: mx.compile with variable control flow (random num_recurse) may not work.
+    # Compile only when recursion is disabled; otherwise use eager mode.
+    if args.recurse_train_max <= 1:
+        compiled_loss = mx.compile(lambda x, y: model.loss(x, y), inputs=model.state, outputs=model.state)
+        compiled_loss_and_grad = mx.compile(
+            nn.value_and_grad(model, lambda x, y: model.loss(x, y)),
+            inputs=model.state, outputs=model.state,
+        )
+    else:
+        compiled_loss = _eval_loss
+        compiled_loss_and_grad = nn.value_and_grad(model, _train_loss)
 
     # Print config once so logs are self-describing.
     n_params = sum(int(np.prod(p.shape)) for _, p in tree_flatten(model.parameters()))
@@ -943,6 +1014,10 @@ def main() -> None:
         f"warmup_steps:{args.warmup_steps} max_wallclock_seconds:{args.max_wallclock_seconds:.3f}"
     )
     log(f"mlx_max_microbatch_tokens:{args.mlx_max_microbatch_tokens}")
+    if args.recurse_train_max > 1:
+        log(f"recursion:train_min={args.recurse_train_min} train_max={args.recurse_train_max} "
+            f"eval={args.recurse_eval} temp={args.recurse_temp} ema={args.recurse_ema} "
+            f"xsa={args.recurse_xsa} step_weight={args.recurse_step_weight}")
     log(
         f"optimizer:muon+adam muon_matrix_params:{len(opt.matrix_keys)} scalar_params:{len(opt.scalar_keys)} "
         f"embed_lr:{args.tied_embed_lr} "
