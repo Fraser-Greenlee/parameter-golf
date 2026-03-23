@@ -38,19 +38,39 @@ Key findings:
 - Entropy decreases sharply through layers: 2.16 (L0) -> 0.24 (L5)
 - FFN: zero dead neurons, activation magnitudes increase 7x from L0 to L5
 
-### Phase 2: Weight Engineering (in progress)
+### Phase 2: Weight Engineering
 
 `engineer_weights.py` constructs circuits from first principles and verifies them.
 
 | Circuit | Status | Method | Result |
 |---------|--------|--------|--------|
-| Previous-token head | **DONE** | RoPE bias pre-rotation (half-half layout) | 100% prev-token (matches trained 98%) |
-| Copy heads | **DONE** | Identity QK + identity OV with exponential SV decay | 97% self-attention, strong copying |
-| Suppression heads | **DONE** | Low-scale QK (broad attention) + negative OV identity | Working, high entropy |
-| Induction heads | **DONE** | K-composition + XSA (exclusive self-attention) | 100% induction match on repetitive text, BOS-sink fallback on non-repetitive |
-| Content heads | **DONE** | Moderate identity QK, weak OV | Default filler for unassigned heads |
+| Previous-token head | **DONE** | RoPE bias pre-rotation (half-half layout) | 100% prev-token, +0.008 nats isolated loss |
+| Induction heads | **DONE** | K-composition + XSA (exclusive self-attention) | 100% induction on repetitive, BOS-sink fallback |
+| Copy heads | **DONE** | Identity QK + trained V/O | +0.049 mean loss with trained V/O |
+| Suppression heads | **DONE** | Low-scale QK + trained V/O | +0.019 mean loss |
+| Content heads | **DONE** | Moderate identity QK + trained V/O | +0.048 mean loss |
 | FFN layers | **NOT STARTED** | -- | Using random init |
 | Embeddings | **NOT STARTED** | -- | Using random init |
+
+### Phase 3: Per-Head Isolated Evaluation
+
+`test_heads_isolated.py` replaces each head individually in the trained model (keeping all other heads trained) and measures loss impact. Uses 20 real FineWeb validation documents.
+
+**Key finding: OV subspace alignment is critical.** With arbitrary orthogonal subspaces, copy heads cost +1.51 nats each. With trained V/O matrices, they cost only +0.049 nats -- a **31x improvement**.
+
+| Circuit | Arbitrary V/O | Trained V/O | Improvement |
+|---------|--------------|-------------|-------------|
+| Copy (L5, mean) | +1.51 | **+0.049** | 31x |
+| Prev-token (L2_H1) | +7.23 | **+0.008** | 900x |
+| Induction (mean) | +0.028 | **+0.003** | 9x |
+| Suppress (mean) | +0.024 | **+0.019** | modest |
+| Content (mean) | +0.061 | **+0.048** | modest |
+
+The remaining loss gap is almost entirely from content heads and copy heads having engineered QK patterns (identity-like) instead of the trained model's learned content-specific QK circuits.
+
+### Phase 4: Deep Dive into Individual Heads
+
+`inspect_prev_token_head.py` analyzes L2_H1 on 40 FineWeb docs (10,482 positions).
 
 ## Key Breakthrough: XSA (Exclusive Self-Attention)
 
@@ -75,7 +95,36 @@ Copy heads and content heads keep standard attention (they benefit from self-att
 
 **Cost for Parameter Golf**: ~2 lines of code (boolean flag + diagonal mask), zero artifact bytes.
 
+## L2_H1 Deep Dive: Contraction Reconstruction
+
+The trained prev-token head is NOT purely positional. On FineWeb data:
+
+- **Mean prev-token weight: 0.77** (not ~1.0). 23% of attention goes elsewhere.
+- **Entropy: 0.92** vs 0.02 for our engineered version.
+- **83 of 10,482 positions (0.8%)** attend to something other than prev-token.
+
+The non-prev-token behavior has a clear semantic pattern: **contraction and possessive reconstruction**. When BPE splits `don't` into `don`, `'`, `t`:
+- Token `t` attends back to `don` (0.35 weight), not to `'` (the literal prev token)
+- Same for: `can't`→`can`, `won't`→`won`, `didn't`→`didn`
+- Possessives: `Ohio's`→`s` attends to `Ohio` (0.58), not to `'`
+
+**Tokens with weakest prev-token signal**: `t` (0.35), `,"` (0.38), `s` (0.43) -- contraction/possessive suffixes. **Strongest**: subword continuations like `N` (0.98), `00` (0.97) -- mid-word tokens that always follow their prefix.
+
+Despite this rich content behavior, **our pure positional version costs only +0.008 nats** -- the contraction feature is linguistically interesting but not critical for loss.
+
 ## What's Left
+
+### Engineering real content features
+
+The per-head evaluation shows that with trained V/O, most heads have small loss deltas. The remaining gap is in the QK circuits -- which tokens attend to which. The content heads (L0-L4) use learned semantic features we haven't replicated:
+- Which tokens are semantically similar (for identity QK heads)
+- Which positions carry relevant context (for distant-content heads)
+- How to modulate attention sharpness by content
+
+Next steps for content head engineering:
+- Deep-dive the highest-loss content heads (L0_H0, L0_H7, L1_H2) on FineWeb
+- Identify the semantic features their QK circuits detect
+- Attempt to reproduce with engineered Q/K weight constructions
 
 ### FFN engineering
 
@@ -106,7 +155,15 @@ pythia_70m_analysis/
   heads/L{0-5}_H{0-7}.txt       # 48 attention pattern dumps
   ffn/L{0-5}_neurons.txt         # 6 FFN neuron profile dumps
   circuits/L{0-5}_H{0-7}_{ov,qk}.txt  # 96 circuit analysis dumps
+  compare_engineered_attention.py # Full model comparison (all heads replaced)
+  test_heads_isolated.py         # Per-head isolated evaluation
+  inspect_prev_token_head.py     # Deep dive into L2_H1
+  heads/L{0-5}_H{0-7}.txt       # 48 attention pattern dumps
+  ffn/L{0-5}_neurons.txt         # 6 FFN neuron profile dumps
+  circuits/L{0-5}_H{0-7}_{ov,qk}.txt  # 96 circuit analysis dumps
   summary/head_classification.md # Per-head type classification
   summary/ffn_analysis.md        # FFN layer analysis
   summary/implications_for_parameter_golf.md  # Actionable init changes
+  summary/per_head_comparison.md # Isolated per-head loss deltas
+  summary/prev_token_head_deep_dive.md  # L2_H1 contraction reconstruction
 ```
