@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Sweep runner for recursive diffusion LM configs.
+
+Runs configs sequentially on 8xH100 via torchrun.
+Results are logged to sweep_results/ directory.
+
+Usage:
+  python3 sweep_recursive.py                    # run all configs
+  python3 sweep_recursive.py --configs baseline recurse2 recurse4_xsa  # run subset
+  python3 sweep_recursive.py --dry-run          # print commands only
+"""
+import argparse
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# Each config is a dict of env var overrides on top of defaults.
+# The baseline config matches current SOTA minus competition-specific tricks.
+CONFIGS = {
+    # === Baselines ===
+    "baseline": {
+        "RECURSE_TRAIN_MAX": "1",
+        "RECURSE_EVAL": "1",
+    },
+
+    # === Training recursion depth ===
+    "recurse2": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
+        "RECURSE_EVAL": "2",
+    },
+    "recurse4": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "4",
+        "RECURSE_EVAL": "4",
+    },
+    "recurse2_fixed": {
+        "RECURSE_TRAIN_MIN": "2", "RECURSE_TRAIN_MAX": "2",
+        "RECURSE_EVAL": "2",
+    },
+
+    # === Eval-time scaling (train at 2, eval at more) ===
+    "recurse2_eval4": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
+        "RECURSE_EVAL": "4",
+    },
+    "recurse2_eval8": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
+        "RECURSE_EVAL": "8",
+    },
+
+    # === XSA ===
+    "recurse2_xsa": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
+        "RECURSE_EVAL": "2", "RECURSE_XSA": "1",
+    },
+    "recurse4_xsa": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "4",
+        "RECURSE_EVAL": "4", "RECURSE_XSA": "1",
+    },
+
+    # === Temperature ===
+    "recurse2_temp05": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
+        "RECURSE_EVAL": "2", "RECURSE_TEMP": "0.5",
+    },
+    "recurse2_temp2": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
+        "RECURSE_EVAL": "2", "RECURSE_TEMP": "2.0",
+    },
+
+    # === EMA blending ===
+    "recurse2_ema08": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
+        "RECURSE_EVAL": "2", "RECURSE_EMA": "0.8",
+    },
+    "recurse2_ema05": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
+        "RECURSE_EVAL": "2", "RECURSE_EMA": "0.5",
+    },
+
+    # === Step weighting ===
+    "recurse2_uniform": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
+        "RECURSE_EVAL": "2", "RECURSE_STEP_WEIGHT": "uniform",
+    },
+    "recurse2_last1": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
+        "RECURSE_EVAL": "2", "RECURSE_STEP_WEIGHT": "last_1",
+    },
+
+    # === Combined best guesses ===
+    "recurse2_xsa_temp05": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
+        "RECURSE_EVAL": "4", "RECURSE_XSA": "1", "RECURSE_TEMP": "0.5",
+    },
+    "recurse4_xsa_ema08": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "4",
+        "RECURSE_EVAL": "4", "RECURSE_XSA": "1", "RECURSE_EMA": "0.8",
+    },
+}
+
+# Shared defaults for all configs
+SHARED_DEFAULTS = {
+    "ITERATIONS": "20000",
+    "TRAIN_BATCH_TOKENS": "524288",
+    "TRAIN_SEQ_LEN": "1024",
+    "VAL_LOSS_EVERY": "1000",
+    "MAX_WALLCLOCK_SECONDS": "600",
+}
+
+
+def run_config(name: str, overrides: dict, nproc: int, dry_run: bool, out_dir: Path):
+    env = {**os.environ, **SHARED_DEFAULTS, **overrides, "RUN_ID": name}
+    log_file = out_dir / f"{name}.log"
+
+    cmd = [
+        "torchrun", "--standalone", f"--nproc_per_node={nproc}",
+        "train_gpt.py",
+    ]
+
+    print(f"\n{'='*60}")
+    print(f"Config: {name}")
+    print(f"Overrides: {overrides}")
+    print(f"Log: {log_file}")
+    print(f"{'='*60}")
+
+    if dry_run:
+        print(f"  [DRY RUN] Would run: {' '.join(cmd)}")
+        return
+
+    with open(log_file, "w") as f:
+        t0 = time.time()
+        result = subprocess.run(cmd, env=env, stdout=f, stderr=subprocess.STDOUT)
+        elapsed = time.time() - t0
+
+    if result.returncode != 0:
+        print(f"  FAILED (exit code {result.returncode}) after {elapsed:.0f}s")
+    else:
+        print(f"  DONE in {elapsed:.0f}s")
+
+    # Extract final val_bpb from log
+    try:
+        with open(log_file) as f:
+            for line in reversed(f.readlines()):
+                if "val_bpb" in line:
+                    print(f"  Result: {line.strip()}")
+                    break
+    except Exception:
+        pass
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Sweep recursive diffusion configs")
+    parser.add_argument("--configs", nargs="*", default=None, help="Subset of configs to run")
+    parser.add_argument("--dry-run", action="store_true", help="Print commands only")
+    parser.add_argument("--nproc", type=int, default=8, help="GPUs per run")
+    parser.add_argument("--out-dir", type=str, default="sweep_results", help="Output directory")
+    args = parser.parse_args()
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(exist_ok=True)
+
+    configs_to_run = args.configs or list(CONFIGS.keys())
+    print(f"Running {len(configs_to_run)} configs: {configs_to_run}")
+
+    for name in configs_to_run:
+        if name not in CONFIGS:
+            print(f"WARNING: Unknown config '{name}', skipping")
+            continue
+        run_config(name, CONFIGS[name], args.nproc, args.dry_run, out_dir)
+
+    print(f"\nAll done. Results in {out_dir}/")
+
+
+if __name__ == "__main__":
+    main()

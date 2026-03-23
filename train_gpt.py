@@ -70,6 +70,15 @@ class Hyperparameters:
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
 
+    # Recursive soft-embedding diffusion. Defaults disable recursion (baseline unchanged).
+    recurse_train_min = int(os.environ.get("RECURSE_TRAIN_MIN", 1))
+    recurse_train_max = int(os.environ.get("RECURSE_TRAIN_MAX", 1))  # 1=disabled
+    recurse_eval = int(os.environ.get("RECURSE_EVAL", 1))
+    recurse_temp = float(os.environ.get("RECURSE_TEMP", 1.0))
+    recurse_ema = float(os.environ.get("RECURSE_EMA", 1.0))  # 1.0=no blending
+    recurse_step_weight = os.environ.get("RECURSE_STEP_WEIGHT", "linear")
+    recurse_xsa = bool(int(os.environ.get("RECURSE_XSA", "0")))
+
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
     head_lr = float(os.environ.get("HEAD_LR", 0.008))
@@ -256,7 +265,11 @@ def eval_val(
             x = local[:-1].reshape(-1, args.train_seq_len)
             y = local[1:].reshape(-1, args.train_seq_len)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                batch_loss = model(x, y).detach()
+                batch_loss = model(x, y, num_recurse=args.recurse_eval,
+                                   recurse_temp=args.recurse_temp,
+                                   recurse_ema=args.recurse_ema,
+                                   recurse_xsa=args.recurse_xsa,
+                                   recurse_step_weight=args.recurse_step_weight).detach()
             batch_token_count = float(y.numel())
             val_loss_sum += batch_loss.to(torch.float64) * batch_token_count
             val_token_count += batch_token_count
@@ -580,7 +593,7 @@ class CausalSelfAttention(nn.Module):
         self.q_gain = nn.Parameter(torch.full((num_heads,), qk_gain_init, dtype=torch.float32))
         self.rotary = Rotary(self.head_dim, base=rope_base)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, use_xsa: bool = False) -> Tensor:
         bsz, seqlen, dim = x.shape
         q = self.c_q(x).reshape(bsz, seqlen, self.num_heads, self.head_dim).transpose(1, 2)
         k = self.c_k(x).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim).transpose(1, 2)
@@ -591,14 +604,19 @@ class CausalSelfAttention(nn.Module):
         q = apply_rotary_emb(q, cos, sin)
         k = apply_rotary_emb(k, cos, sin)
         q = q * self.q_gain.to(dtype=q.dtype)[None, :, None, None]
-        y = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            attn_mask=None,
-            is_causal=True,
-            enable_gqa=(self.num_kv_heads != self.num_heads),
-        )
+        if use_xsa:
+            # XSA: causal mask with self-attention excluded (diagonal = -inf)
+            mask = torch.tril(torch.ones(seqlen, seqlen, device=x.device, dtype=torch.bool))
+            mask.fill_diagonal_(False)  # exclude self-position
+            y = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=mask,
+                enable_gqa=(self.num_kv_heads != self.num_heads),
+            )
+        else:
+            y = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=None, is_causal=True,
+                enable_gqa=(self.num_kv_heads != self.num_heads),
+            )
         y = y.transpose(1, 2).contiguous().reshape(bsz, seqlen, dim)
         return self.proj(y)
 
@@ -636,10 +654,10 @@ class Block(nn.Module):
         self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.resid_mix = nn.Parameter(torch.stack((torch.ones(dim), torch.zeros(dim))).float())
 
-    def forward(self, x: Tensor, x0: Tensor) -> Tensor:
+    def forward(self, x: Tensor, x0: Tensor, use_xsa: bool = False) -> Tensor:
         mix = self.resid_mix.to(dtype=x.dtype)
         x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
-        attn_out = self.attn(self.attn_norm(x))
+        attn_out = self.attn(self.attn_norm(x), use_xsa=use_xsa)
         x = x + self.attn_scale.to(dtype=x.dtype)[None, None, :] * attn_out
         x = x + self.mlp_scale.to(dtype=x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
         return x
@@ -697,31 +715,73 @@ class GPT(nn.Module):
             if isinstance(module, nn.Linear) and getattr(module, "_zero_init", False):
                 nn.init.zeros_(module.weight)
 
-    def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
-        x = self.tok_emb(input_ids)
-        x = F.rms_norm(x, (x.size(-1),))
+    def forward_body(self, x: Tensor, use_xsa: bool = False) -> Tensor:
+        """Run transformer blocks with U-Net skip connections. Reusable for recursion."""
         x0 = x
         skips: list[Tensor] = []
-
-        # First half stores skips; second half reuses them in reverse order.
         for i in range(self.num_encoder_layers):
-            x = self.blocks[i](x, x0)
+            x = self.blocks[i](x, x0, use_xsa=use_xsa)
             skips.append(x)
         for i in range(self.num_decoder_layers):
             if skips:
                 x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
-            x = self.blocks[self.num_encoder_layers + i](x, x0)
+            x = self.blocks[self.num_encoder_layers + i](x, x0, use_xsa=use_xsa)
+        return self.final_norm(x)
 
-        x = self.final_norm(x).reshape(-1, x.size(-1))
-        targets = target_ids.reshape(-1)
+    def _compute_logits(self, h: Tensor) -> Tensor:
+        """Hidden states (*, H) -> softcapped logits (*, V)."""
         if self.tie_embeddings:
-            logits_proj = F.linear(x, self.tok_emb.weight)
+            logits_proj = F.linear(h, self.tok_emb.weight)
         else:
             if self.lm_head is None:
                 raise RuntimeError("lm_head is required when tie_embeddings=False")
-            logits_proj = self.lm_head(x)
-        logits = self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
-        return F.cross_entropy(logits.float(), targets, reduction="mean")
+            logits_proj = self.lm_head(h)
+        return self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
+
+    @staticmethod
+    def _step_weights(T: int, mode: str) -> list[float]:
+        if mode == "linear":
+            return [(t + 1) / T for t in range(T)]
+        elif mode == "last_1":
+            return [0.0] * (T - 1) + [1.0]
+        else:  # uniform
+            return [1.0] * T
+
+    def forward(self, input_ids: Tensor, target_ids: Tensor,
+                num_recurse: int = 1, recurse_temp: float = 1.0,
+                recurse_ema: float = 1.0, recurse_xsa: bool = False,
+                recurse_step_weight: str = "linear") -> Tensor:
+        B, L = input_ids.shape
+        H = self.tok_emb.weight.shape[1]
+        targets = target_ids.reshape(-1)
+
+        # Pass 0: standard token embedding forward
+        x = F.rms_norm(self.tok_emb(input_ids), (H,))
+        h = self.forward_body(x)
+        logits = self._compute_logits(h.reshape(-1, H))
+
+        if num_recurse <= 1:
+            return F.cross_entropy(logits.float(), targets, reduction="mean")
+
+        # Multi-pass recursive refinement
+        weights = self._step_weights(num_recurse, recurse_step_weight)
+        w_sum = sum(weights)
+        total_loss = weights[0] * F.cross_entropy(logits.float(), targets, reduction="mean")
+
+        for t in range(1, num_recurse):
+            # Soft embedding: logits -> probs -> weighted embedding sum (differentiable via probs)
+            with torch.no_grad():
+                probs = F.softmax(logits.float() / recurse_temp, dim=-1)  # (B*L, V)
+            soft_emb = probs.to(self.tok_emb.weight.dtype) @ self.tok_emb.weight  # (B*L, H)
+            # EMA blending with previous hidden states
+            if recurse_ema < 1.0:
+                soft_emb = (1.0 - recurse_ema) * h.reshape(-1, H).detach() + recurse_ema * soft_emb
+            x_new = F.rms_norm(soft_emb.reshape(B, L, H), (H,))
+            h = self.forward_body(x_new, use_xsa=recurse_xsa)
+            logits = self._compute_logits(h.reshape(-1, H))
+            total_loss = total_loss + weights[t] * F.cross_entropy(logits.float(), targets, reduction="mean")
+
+        return total_loss / w_sum
 
 
 # -----------------------------
@@ -840,7 +900,12 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
-    compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
+    if args.recurse_train_max > 1:
+        # Recursive loop has variable control flow; compile only the body
+        base_model.forward_body = torch.compile(base_model.forward_body, dynamic=False, fullgraph=True)
+        compiled_model = base_model
+    else:
+        compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
     model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
 
     # Optimizer split:
@@ -897,6 +962,10 @@ def main() -> None:
     log0(f"world_size:{world_size} grad_accum_steps:{grad_accum_steps}")
     log0("sdp_backends:cudnn=False flash=True mem_efficient=False math=False")
     log0(f"attention_mode:gqa num_heads:{args.num_heads} num_kv_heads:{args.num_kv_heads}")
+    if args.recurse_train_max > 1:
+        log0(f"recursion:train_min={args.recurse_train_min} train_max={args.recurse_train_max} "
+             f"eval={args.recurse_eval} temp={args.recurse_temp} ema={args.recurse_ema} "
+             f"xsa={args.recurse_xsa} step_weight={args.recurse_step_weight}")
     log0(
         f"tie_embeddings:{args.tie_embeddings} embed_lr:{token_lr} "
         f"head_lr:{args.head_lr if base_model.lm_head is not None else 0.0} "
@@ -1013,7 +1082,10 @@ def main() -> None:
                 model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
             x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                loss = model(x, y)
+                nr = random.randint(args.recurse_train_min, args.recurse_train_max)
+                loss = model(x, y, num_recurse=nr, recurse_temp=args.recurse_temp,
+                             recurse_ema=args.recurse_ema, recurse_xsa=args.recurse_xsa,
+                             recurse_step_weight=args.recurse_step_weight)
             train_loss += loss.detach()
             (loss * grad_scale).backward()
         train_loss /= grad_accum_steps
