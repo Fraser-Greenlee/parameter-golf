@@ -1,0 +1,411 @@
+=== Layer 1 FFN Neurons (2048 neurons) ===
+Total token positions analyzed: 2200
+
+Active neurons (>10% fire rate): 2039/2048
+Sparse neurons (1-5% fire rate): 7/2048
+Dead neurons (<1% fire rate): 1/2048
+Mean firing rate: 60.9%
+
+--- Top 50 Most Active Neurons (by firing rate) ---
+
+Neuron 1310 | fire=79% | mean=0.144 | max=1.43
+  Triggers: ' year' (1.43), '-' (1.29), 'ense' (1.28), 'ness' (1.22), 'ively' (1.22), 'atter' (1.19), ' effect' (1.03), 'er' (1.03)
+  Top context: ' 30' ' percent' ' last' ' year'
+  Output boosts: '�' (+0.024), '�' (+0.018), '��' (+0.016), '�' (+0.015), '�' (+0.014)
+  Output suppresses: 'iseconds' (-0.146), 'standing' (-0.136), ' eternity' (-0.134), 'teenth' (-0.133), 'ingly' (-0.133)
+
+Neuron 1718 | fire=78% | mean=0.157 | max=2.36
+  Triggers: ' from' (2.36), 'class' (2.00), ' Linked' (1.87), 'self' (1.78), 'self' (1.62), 'self' (1.44), 'self' (1.43), 'plot' (1.42)
+  Top context: ' spaces' 'hip' ' emerged' ' from'
+  Output boosts: '�' (+0.030), '�' (+0.022), '�' (+0.020), '�' (+0.017), '��' (+0.017)
+  Output suppresses: ' mayor' (-0.145), ' age' (-0.133), ' candidates' (-0.132), ' representative' (-0.129), ' candidate' (-0.129)
+
+Neuron 1669 | fire=77% | mean=0.151 | max=1.46
+  Triggers: ' left' (1.46), 'IN' (1.41), ' <' (1.33), 'id' (1.30), 'id' (1.11), ' levels' (1.10), 'head' (1.04), ' hours' (1.01)
+  Top context: '
+' '    ' 'while' ' left'
+  Output boosts: 'oner' (+0.090), ' defence' (+0.090), 'yn' (+0.088), 'quired' (+0.087), ' sequenced' (+0.086)
+  Output suppresses: ' times' (-0.020), ' respectively' (-0.020), 'jä' (-0.018), ' loads' (-0.017), ' trips' (-0.017)
+
+Neuron  547 | fire=77% | mean=0.154 | max=2.10
+  Triggers: 'abel' (2.10), 'aph' (1.56), 'aph' (1.55), ' equ' (1.43), ' Southeast' (1.35), ' Calvin' (1.18), 'plt' (1.13), 'sin' (1.10)
+  Top context: 'plt' '.' 'yl' 'abel'
+  Output boosts: 'ureus' (+0.085), 'hav' (+0.066), 'ionate' (+0.059), 'aras' (+0.058), 'holes' (+0.058)
+  Output suppresses: ' capacities' (-0.055), 'raph' (-0.051), ' capacity' (-0.051), ')$)' (-0.050), 'unov' (-0.050)
+
+Neuron 1010 | fire=77% | mean=0.148 | max=1.33
+  Triggers: ' each' (1.33), ' still' (1.17), ' last' (1.16), ' other' (1.12), ' Something' (1.07), 'ice' (1.02), ',' (1.02), ',' (1.01)
+  Top context: ' card' ' left' ' at' ' each'
+  Output boosts: '��' (-0.011), '�' (-0.012), '�' (-0.017), '�' (-0.017), '�' (-0.017)
+  Output suppresses: ' sexes' (-0.157), 'ticos' (-0.156), 'ensa' (-0.155), 'laws' (-0.155), 'rones' (-0.155)
+
+Neuron  290 | fire=77% | mean=0.147 | max=1.52
+  Triggers: ' up' (1.52), ' down' (1.36), ' too' (1.32), ' up' (1.20), ' divides' (1.12), ' stock' (1.09), 'attention' (1.07), ' of' (1.05)
+  Top context: ' didn' ''t' ' add' ' up'
+  Output boosts: 'ians' (+0.062), 'ril' (+0.059), '\'' (+0.059), 'IX' (+0.057), 'iations' (+0.057)
+  Output suppresses: ' whatsoever' (-0.058), 'purpose' (-0.058), ' fellows' (-0.054), 'yahoo' (-0.053), 'heading' (-0.051)
+
+Neuron  461 | fire=76% | mean=0.141 | max=1.25
+  Triggers: 'ORDER' (1.25), ' y' (0.96), '`' (0.96), '0' (0.91), ' at' (0.90), 'l' (0.87), ')' (0.83), ' >' (0.82)
+  Top context: ' >' ' 3' '
+' 'ORDER'
+  Output boosts: ' [$\' (+0.125), ' [$' (+0.121), 'edic' (+0.118), ' mode' (+0.117), 'NOW' (+0.115)
+  Output suppresses: 'swer' (-0.037), 'falls' (-0.033), 'chitz' (-0.032), ' governors' (-0.030), '��' (-0.024)
+
+Neuron  568 | fire=76% | mean=0.139 | max=1.21
+  Triggers: ' or' (1.21), ':' (1.08), ' right' (1.07), ' and' (0.89), ' and' (0.89), ':' (0.88), ':' (0.82), ',' (0.76)
+  Top context: 'pro' 'fil' 'er' ' or'
+  Output boosts: 'pite' (+0.040), 'abouts' (+0.037), 'idium' (+0.031), 'ń' (+0.024), 'igo' (+0.022)
+  Output suppresses: 'obiles' (-0.104), 'uso' (-0.098), 'var' (-0.094), 'load' (-0.092), 'METHOD' (-0.092)
+
+Neuron  752 | fire=76% | mean=0.140 | max=2.04
+  Triggers: ' think' (2.04), 'ol' (1.57), ' I' (1.13), ' think' (1.09), 'I' (1.04), 'She' (1.03), ' victims' (1.00), 'I' (0.96)
+  Top context: 'What' ' do' ' you' ' think'
+  Output boosts: 'ilation' (+0.070), ' degrees' (+0.060), ' their' (+0.059), 'umab' (+0.059), ' cords' (+0.058)
+  Output suppresses: 'ateur' (-0.069), 'soever' (-0.063), 'nsic' (-0.055), 'qui' (-0.054), 'acent' (-0.054)
+
+Neuron 1221 | fire=76% | mean=0.156 | max=2.33
+  Triggers: 'IT' (2.33), ' Organization' (1.94), 'Monday' (1.63), ' that' (1.62), ' BY' (1.53), ' BY' (1.31), ' about' (1.28), ' is' (1.27)
+  Top context: 'C' '
+' 'LIM' 'IT'
+  Output boosts: 'oslav' (+0.113), '_;' (+0.110), 'fare' (+0.105), '!_' (+0.102), ' Contact' (+0.102)
+  Output suppresses: '��' (-0.051), 'noreply' (-0.028), 'aeda' (-0.025), '��' (-0.022), '��' (-0.021)
+
+Neuron 1184 | fire=76% | mean=0.145 | max=1.78
+  Triggers: ' about' (1.78), '?' (1.37), 'ons' (1.23), ' or' (1.15), '?' (1.09), ' reduces' (1.08), ' and' (1.06), ' about' (1.03)
+  Top context: ' do' ' you' ' think' ' about'
+  Output boosts: '��' (-0.001), '
+                 ' (-0.006), '                                     ' (-0.006), ' 
+           ' (-0.006), '
+                      ' (-0.006)
+  Output suppresses: '=$' (-0.180), ' we' (-0.179), '=`' (-0.170), '>]' (-0.168), '=${' (-0.168)
+
+Neuron  258 | fire=75% | mean=0.142 | max=1.51
+  Triggers: 'fall' (1.51), 'services' (1.08), ' "' (1.00), ' "' (0.97), 'attention' (0.92), ' "' (0.87), ' of' (0.83), ' "' (0.81)
+  Top context: ' Maria' ' made' ' land' 'fall'
+  Output boosts: '�' (+0.002), '�' (+0.001), '��' (+0.000), '�' (+0.000), '�' (-0.001)
+  Output suppresses: 'ename' (-0.142), 'twitter' (-0.130), 'exports' (-0.130), 'so' (-0.129), '\%' (-0.128)
+
+Neuron 1232 | fire=75% | mean=0.158 | max=1.76
+  Triggers: 'anges' (1.76), 'ons' (1.43), 'User' (1.39), 'The' (1.23), 'The' (1.23), 'The' (1.23), 'The' (1.23), 'The' (1.23)
+  Top context: ' bought' ' some' ' or' 'anges'
+  Output boosts: 'ishing' (+0.071), 'isher' (+0.070), 'ished' (+0.069), 'ister' (+0.069), 'ishers' (+0.068)
+  Output suppresses: 'rael' (-0.045), ' suppose' (-0.043), ' reasons' (-0.041), ' Statement' (-0.039), ' heap' (-0.038)
+
+Neuron 1054 | fire=75% | mean=0.140 | max=1.48
+  Triggers: ' case' (1.48), 'PH' (1.25), 'C' (1.24), ' case' (1.12), '-' (0.92), 'ense' (0.91), ' enough' (0.80), ' up' (0.78)
+  Top context: ':' ' a' ' base' ' case'
+  Output boosts: 'yst' (+0.046), ' myc' (+0.045), 'onstr' (+0.044), ' wid' (+0.043), 'mol' (+0.042)
+  Output suppresses: 'ursuant' (-0.076), 'iscus' (-0.074), 'anmar' (-0.074), 'itely' (-0.072), 'iday' (-0.072)
+
+Neuron  331 | fire=75% | mean=0.148 | max=1.28
+  Triggers: ':' (1.28), ':' (1.14), '."' (1.13), ' properties' (1.13), 'return' (1.12), '."' (1.03), ' pan' (1.02), ' Fourier' (0.92)
+  Top context: ' through' ' four' ' phases' ':'
+  Output boosts: 'ytics' (+0.123), ' groups' (+0.123), 'ively' (+0.123), ' displays' (+0.122), ' Figure' (+0.121)
+  Output suppresses: '�' (-0.004), '
+                                                  ' (-0.001), '
+         ' (-0.001), '                                                                              ' (-0.001), '
+
+                                ' (-0.001)
+
+Neuron 1555 | fire=75% | mean=0.140 | max=1.39
+  Triggers: ' increased' (1.39), ' time' (1.33), ' single' (1.27), ' symmetry' (1.06), ' where' (1.03), ' disease' (0.96), ' hardest' (0.94), ' transformer' (0.90)
+  Top context: ' global' ' measles' ' cases' ' increased'
+  Output boosts: ' equivalents' (+0.065), 'ptions' (+0.065), 'pto' (+0.064), 'xico' (+0.062), 'ptic' (+0.059)
+  Output suppresses: 'RNA' (-0.053), 'nings' (-0.052), 'ells' (-0.051), 'ť' (-0.046), ' Arrow' (-0.045)
+
+Neuron 1021 | fire=75% | mean=0.158 | max=1.81
+  Triggers: ' sharply' (1.81), ' new' (1.55), 'ynthesis' (1.43), ' weaken' (1.38), ' Union' (1.37), 'dependent' (1.32), 'Photos' (1.23), ' rose' (1.20)
+  Top context: ' stock' ' markets' ' fell' ' sharply'
+  Output boosts: ' Algebra' (+0.123), ' elementary' (+0.117), 'arus' (+0.117), ':)' (+0.113), ' example' (+0.111)
+  Output suppresses: '�' (-0.015), 'umab' (-0.014), ''/' (-0.011), 'uez' (-0.010), '�' (-0.008)
+
+Neuron  688 | fire=75% | mean=0.148 | max=1.64
+  Triggers: ' do' (1.64), ' do' (1.46), ' Organization' (1.42), ' found' (1.39), 'What' (1.38), ' Something' (1.38), ':' (1.34), ' recursion' (1.03)
+  Top context: 'Q' ':' ' How' ' do'
+  Output boosts: ' taste' (+0.077), ' whence' (+0.070), 'pered' (+0.069), 'úblic' (+0.067), 'isexual' (+0.066)
+  Output suppresses: 'bur' (-0.047), 'mium' (-0.046), 'izumab' (-0.044), 'Univers' (-0.042), 'etine' (-0.042)
+
+Neuron 1408 | fire=75% | mean=0.153 | max=1.53
+  Triggers: ' point' (1.53), ' back' (1.51), ' Reserve' (1.44), 'ynthesis' (1.29), 'ase' (1.27), ' me' (1.22), ' Organization' (1.18), 'hip' (1.12)
+  Top context: '.' ' The' ' meeting' ' point'
+  Output boosts: '){#' (+0.137), 'agar' (+0.136), ' ."' (+0.135), 'obacillus' (+0.133), 'ostream' (+0.131)
+  Output suppresses: '��' (-0.016), '�' (-0.005), '�' (-0.003), ' involvement' (-0.002), '�' (-0.000)
+
+Neuron 1526 | fire=75% | mean=0.133 | max=1.35
+  Triggers: ' hour' (1.35), ' day' (0.89), ' degrees' (0.85), 'H' (0.80), ' Wednesday' (0.69), ' day' (0.64), ' day' (0.58), ' day' (0.57)
+  Top context: ' 120' ' miles' ' per' ' hour'
+  Output boosts: 'reo' (+0.157), ' onCreate' (+0.154), 'rette' (+0.154), ' namespace' (+0.154), 'orno' (+0.152)
+  Output suppresses: '�' (-0.007), '�' (-0.003), '�' (-0.003), '�' (-0.002), '�' (-0.001)
+
+Neuron  742 | fire=75% | mean=0.150 | max=2.24
+  Triggers: ' me' (2.24), ' talk' (1.60), ' support' (1.59), ' effect' (1.59), ' understand' (1.55), ' help' (1.44), ' like' (1.34), ' address' (1.23)
+  Top context: ' resources' '.' ' Let' ' me'
+  Output boosts: 'uric' (+0.069), 'urred' (+0.065), ' rheumat' (+0.063), ' smiles' (+0.062), 'ieurs' (+0.061)
+  Output suppresses: ' system' (-0.062), ' circuit' (-0.062), ' format' (-0.057), '):' (-0.056), ')",' (-0.053)
+
+Neuron 1327 | fire=75% | mean=0.155 | max=1.87
+  Triggers: ' {' (1.87), 'urs' (1.72), '):' (1.60), 'def' (1.57), ' function' (1.55), '):' (1.46), 'cent' (1.28), '):' (1.20)
+  Top context: '
+' '    ' 'try' ' {'
+  Output boosts: '"}](#' (+0.156), ' themselves' (+0.155), ' itself' (+0.148), ' herself' (+0.141), ' exploded' (+0.141)
+  Output suppresses: 'elihood' (+0.014), '  
+   ' (+0.015), '
+
+                    ' (+0.015), '   
+' (+0.015), '
+                              ' (+0.015)
+
+Neuron 1712 | fire=75% | mean=0.143 | max=1.23
+  Triggers: 'ok' (1.23), ',' (1.15), 'istant' (1.11), ',' (1.02), ' have' (0.98), ' dial' (0.96), ' (' (0.96), ',' (0.95)
+  Top context: ' (!' 'response' '.' 'ok'
+  Output boosts: ' things' (+0.061), ' none' (+0.060), ' Thing' (+0.060), ' GOOGLE' (+0.056), 'phalt' (+0.054)
+  Output suppresses: ',\[' (-0.075), '.\[[@' (-0.072), 'cert' (-0.066), 'antib' (-0.065), 'Cert' (-0.064)
+
+Neuron 1005 | fire=75% | mean=0.149 | max=1.89
+  Triggers: ' and' (1.89), ' as' (1.49), ' with' (1.35), ' of' (1.28), ' multiple' (1.27), ' and' (1.04), ' neural' (1.03), 'ively' (1.03)
+  Top context: ' chromat' 'ids' ' separate' ' and'
+  Output boosts: 'okes' (+0.127), 'ño' (+0.122), 'ved' (+0.117), ' premiered' (+0.115), 'ides' (+0.115)
+  Output suppresses: ' fault' (-0.017), '��' (-0.014), '�' (-0.014), ' limitation' (-0.011), ' detail' (-0.010)
+
+Neuron 1100 | fire=75% | mean=0.304 | max=1.78
+  Triggers: ' alive' (1.78), ' quick' (1.69), 'Rain' (1.69), ' quick' (1.68), ' sharply' (1.67), ' quick' (1.66), 'lying' (1.65), ' quick' (1.58)
+  Top context: 'The' ' market' ' was' ' alive'
+  Output boosts: ' DOI' (+0.141), ' fiddle' (+0.139), 'rente' (+0.136), ' Reich' (+0.136), ' Highway' (+0.135)
+  Output suppresses: '�' (-0.015), '�' (-0.006), '��' (-0.000), '/*!' (+0.002), '��' (+0.003)
+
+Neuron  477 | fire=75% | mean=0.141 | max=1.75
+  Triggers: ';' (1.75), 'er' (1.32), ' {' (1.27), ';' (1.13), '&' (1.09), ' {' (1.06), ' __' (1.00), '()' (1.00)
+  Top context: 'LIM' 'IT' ' 10' ';'
+  Output boosts: '�' (+0.036), '�' (+0.031), '�' (+0.027), '�' (+0.024), '�' (+0.023)
+  Output suppresses: 'ureus' (-0.118), ' comment' (-0.115), 'ees' (-0.113), 'formaldehyde' (-0.112), ' vote' (-0.111)
+
+Neuron  398 | fire=75% | mean=0.137 | max=1.53
+  Triggers: 'cent' (1.53), 'rest' (1.14), 'NER' (1.05), 'q' (0.89), ' which' (0.78), ':' (0.69), 'mered' (0.62), ' drawn' (0.60)
+  Top context: ' bi' 'ol' 'umines' 'cent'
+  Output boosts: 'aps' (+0.204), 'raz' (+0.203), 'Proto' (+0.201), ' pulp' (+0.201), 'flix' (+0.201)
+  Output suppresses: '�' (+0.013), '��' (+0.019), '�' (+0.019), '�' (+0.022), '�' (+0.022)
+
+Neuron 1744 | fire=75% | mean=0.158 | max=1.68
+  Triggers: ' attention' (1.68), 'WHERE' (1.53), ' out' (1.46), 'search' (1.45), ' ON' (1.34), 'attention' (1.27), 'FROM' (1.14), ' __' (1.14)
+  Top context: ' projections' '.' ' The' ' attention'
+  Output boosts: ' Fargo' (+0.052), '?”' (+0.037), 'dorff' (+0.033), 'ables' (+0.031), 'horn' (+0.026)
+  Output suppresses: ' nucleus' (-0.086), 'arp' (-0.083), 'SYMBOL' (-0.082), 'yl' (-0.080), 'olip' (-0.079)
+
+Neuron 1857 | fire=75% | mean=0.140 | max=1.73
+  Triggers: ' 500' (1.73), ' markets' (1.11), ' scene' (1.04), 'Global' (0.97), ' stock' (0.96), 'ed' (0.95), ' miles' (0.90), 'ents' (0.87)
+  Top context: ' S' '&' 'P' ' 500'
+  Output boosts: 'ioned' (+0.078), ' plot' (+0.076), ' acquaintance' (+0.075), ' ⁢' (+0.075), 'edly' (+0.075)
+  Output suppresses: '”).' (-0.048), '.”' (-0.046), '”.' (-0.040), ',”' (-0.039), '”),' (-0.037)
+
+Neuron 1012 | fire=74% | mean=0.143 | max=1.98
+  Triggers: ' function' (1.98), 'async' (1.68), 'ase' (1.57), ' fox' (1.40), 'ase' (1.37), ' fox' (1.36), '):' (1.36), '):' (1.35)
+  Top context: 'async' ' function'
+  Output boosts: 'orate' (+0.095), 'ively' (+0.089), 'ierno' (+0.085), 'uded' (+0.083), ' [@' (+0.083)
+  Output suppresses: ' Square' (-0.031), 'borg' (-0.028), '니다' (-0.025), 'yard' (-0.025), 'ış' (-0.024)
+
+Neuron 1128 | fire=74% | mean=0.151 | max=1.21
+  Triggers: 'ics' (1.21), 'IT' (1.19), 'athered' (1.18), 'GROUP' (1.11), ' Bob' (1.09), ' transform' (1.08), 'no' (1.03), ' Bob' (0.99)
+  Top context: ' the' ' fore' 'ns' 'ics'
+  Output boosts: ' Agents' (+0.106), ' Channel' (+0.106), ' Morocco' (+0.105), ' Congo' (+0.104), ' secrets' (+0.104)
+  Output suppresses: 'Simplify' (-0.014), 'enron' (-0.009), 'artment' (-0.009), 'esse' (-0.007), 'lut' (-0.007)
+
+Neuron 1026 | fire=74% | mean=0.155 | max=1.56
+  Triggers: 'left' (1.56), ' year' (1.55), 'left' (1.52), ' mat' (1.50), ' {' (1.46), ' Saturday' (1.17), ' fetch' (1.16), 'ING' (1.12)
+  Top context: ':' '
+' '            ' 'left'
+  Output boosts: 'umbered' (+0.048), ' boiling' (+0.039), ' powder' (+0.038), ' rains' (+0.036), ' hydr' (+0.036)
+  Output suppresses: 'headed' (-0.099), 'axial' (-0.086), 'clonal' (-0.081), '7554' (-0.079), 'ISPR' (-0.078)
+
+Neuron  674 | fire=74% | mean=0.169 | max=2.24
+  Triggers: ' me' (2.24), ' about' (1.57), 'I' (1.36), 'I' (1.33), 'I' (1.30), ' voice' (1.28), ' World' (1.23), 'The' (1.13)
+  Top context: 'er' ':' ' Tell' ' me'
+  Output boosts: ' surrounding' (+0.119), ' neighboring' (+0.114), ' neighbouring' (+0.110), 'änder' (+0.108), 'rant' (+0.107)
+  Output suppresses: '��' (-0.018), '�' (-0.016), 'fits' (-0.012), '�' (-0.010), '��' (-0.010)
+
+Neuron 1963 | fire=74% | mean=0.149 | max=1.38
+  Triggers: ':' (1.38), '[' (1.33), ' binary' (1.18), 'In' (1.14), 'mid' (1.10), '[' (0.98), 'Global' (0.96), 'mid' (0.92)
+  Top context: ' current' '.' 'next' ':'
+  Output boosts: 'uximab' (+0.126), 'umab' (+0.123), 'umatic' (+0.111), ' bladder' (+0.103), ' suitable' (+0.101)
+  Output suppresses: '�' (-0.023), 'INESS' (-0.022), '�' (-0.021), '�' (-0.019), ' Times' (-0.017)
+
+Neuron 1710 | fire=74% | mean=0.153 | max=1.47
+  Triggers: ' low' (1.47), ' expected' (1.32), ' winds' (1.30), ' dropped' (1.29), ' after' (1.23), 'yzed' (1.12), ' driven' (1.08), ' fifth' (1.03)
+  Top context: ' urged' ' residents' ' in' ' low'
+  Output boosts: 'uego' (+0.166), 'cine' (+0.158), 'ethylene' (+0.154), 'ettes' (+0.152), 'Fig' (+0.150)
+  Output suppresses: '�' (+0.001), '��' (+0.004), '�' (+0.010), '�' (+0.015), '�' (+0.015)
+
+Neuron  396 | fire=74% | mean=0.145 | max=2.50
+  Triggers: ' 500' (2.50), ' Parliament' (1.69), ' Union' (1.46), ' recurs' (1.27), ' computational' (1.23), 'Mit' (1.08), 'rolled' (1.06), ' Fourier' (1.06)
+  Top context: ' S' '&' 'P' ' 500'
+  Output boosts: 'vision' (+0.168), 'POR' (+0.167), 'Accessor' (+0.165), 'alleg' (+0.164), 'ocular' (+0.164)
+  Output suppresses: '�' (-0.005), '�' (+0.002), '��' (+0.003), '�' (+0.005), '     
+ ' (+0.008)
+
+Neuron 1225 | fire=74% | mean=0.157 | max=1.88
+  Triggers: ' three' (1.88), ' me' (1.81), ' not' (1.52), ' Three' (1.46), ' me' (1.38), ' 2' (1.33), ',' (1.21), ' and' (1.17)
+  Top context: ' Three' ' victims' ',' ' three'
+  Output boosts: 'berries' (+0.047), 'icle' (+0.044), 'icles' (+0.044), 'lers' (+0.032), '
+	
+' (+0.029)
+  Output suppresses: '']);' (-0.100), 'pard' (-0.098), ' behold' (-0.096), 'stood' (-0.094), ' ECM' (-0.093)
+
+Neuron 1850 | fire=74% | mean=0.153 | max=1.69
+  Triggers: ' carriers' (1.69), ' properties' (1.37), ' energy' (1.37), ' basis' (1.35), 'thermal' (1.20), ':' (1.09), ':' (0.99), ' period' (0.99)
+  Top context: '.' ' These' ' energy' ' carriers'
+  Output boosts: 'County' (+0.109), 'wide' (+0.109), 'riage' (+0.108), '                        ' (+0.107), 'ship' (+0.106)
+  Output suppresses: '�' (-0.023), '��' (-0.023), '��' (-0.023), '�' (-0.021), '�' (-0.020)
+
+Neuron  717 | fire=74% | mean=0.159 | max=1.83
+  Triggers: ' mat' (1.83), ' pl' (1.66), 'try' (1.63), 'Inter' (1.61), 'er' (1.54), ' Pre' (1.53), ' as' (1.48), ' await' (1.32)
+  Top context: ' np' '
+' 'import' ' mat'
+  Output boosts: ' WARRANTY' (+0.057), '��' (+0.056), 'ionic' (+0.054), 'documentclass' (+0.052), '=================================' (+0.051)
+  Output suppresses: ' Governor' (-0.056), ' governor' (-0.056), ' clerk' (-0.056), ' news' (-0.054), ' belong' (-0.054)
+
+Neuron 1596 | fire=74% | mean=0.148 | max=1.47
+  Triggers: ' spanned' (1.47), ' pressure' (1.33), ' asked' (1.29), ' consists' (1.13), ' asked' (1.13), ' generated' (1.11), ' low' (1.05), ' multiple' (1.05)
+  Top context: ' debugging' ' issues' ' that' ' spanned'
+  Output boosts: '�' (+0.032), '�' (+0.023), '�' (+0.022), '�' (+0.020), '��' (+0.019)
+  Output suppresses: 'scriptions' (-0.133), ' trust' (-0.128), ' why' (-0.127), 'ging' (-0.126), 'crets' (-0.125)
+
+Neuron 2002 | fire=74% | mean=0.150 | max=1.17
+  Triggers: ' take' (1.17), ' paper' (1.13), 'mid' (1.07), ' which' (1.04), 'What' (1.02), ' book' (0.96), ' iron' (0.93), '&' (0.91)
+  Top context: ' automated' ' system' ' would' ' take'
+  Output boosts: 'cause' (+0.063), 'copyright' (+0.052), 'rap' (+0.051), 'fasterxml' (+0.049), 'maven' (+0.049)
+  Output suppresses: '\@' (-0.065), 'apine' (-0.061), ' $%' (-0.061), 'itin' (-0.058), 'perties' (-0.058)
+
+Neuron 1932 | fire=74% | mean=0.141 | max=1.01
+  Triggers: ' Com' (1.01), ' Bob' (0.92), ' Bob' (0.83), 'arr' (0.79), '(' (0.78), ' (' (0.78), ' Bob' (0.77), ' Bob' (0.74)
+  Top context: ' Nas' 'da' 'q' ' Com'
+  Output boosts: '
+
+
+
+
+' (+0.069), '^](#' (+0.068), '
+
+
+' (+0.065), 'avirus' (+0.064), 'himself' (+0.062)
+  Output suppresses: ' veil' (-0.049), 'vate' (-0.045), 'bject' (-0.044), ' fuss' (-0.043), ' neglig' (-0.043)
+
+Neuron  321 | fire=74% | mean=0.150 | max=1.26
+  Triggers: ' orders' (1.26), 'C' (1.19), 'ok' (1.18), ' BY' (1.16), ' or' (1.12), 'if' (1.12), ' each' (1.11), ' flour' (1.05)
+  Top context: '.' 'name' ',' ' orders'
+  Output boosts: 'orian' (+0.059), 'estly' (+0.052), 'arman' (+0.051), 'matically' (+0.050), ' predict' (+0.049)
+  Output suppresses: 'idia' (-0.068), 'hire' (-0.064), 'asma' (-0.062), 'yg' (-0.061), '\>' (-0.059)
+
+Neuron  223 | fire=74% | mean=0.160 | max=2.05
+  Triggers: 'import' (2.05), 'atter' (1.72), 'if' (1.52), 'y' (1.51), ' was' (1.37), ' of' (1.33), ' down' (1.25), 'show' (1.24)
+  Top context: ' as' ' np' '
+' 'import'
+  Output boosts: 'NEY' (+0.027), 'ressing' (+0.023), ' Had' (+0.022), '#####' (+0.022), ' absorbed' (+0.022)
+  Output suppresses: 'angs' (-0.098), 'erve' (-0.092), '_);' (-0.089), 'raits' (-0.085), 'ods' (-0.082)
+
+Neuron  996 | fire=74% | mean=0.157 | max=1.31
+  Triggers: ' costs' (1.31), ' *' (1.24), ' of' (1.16), ' of' (1.14), ' references' (1.09), ' of' (1.03), ' cart' (0.97), 'figure' (0.95)
+  Top context: ' on' ' cheap' ' borrowing' ' costs'
+  Output boosts: 'lash' (+0.104), ''=' (+0.097), ' \%' (+0.096), 'FORMATION' (+0.095), 'cule' (+0.092)
+  Output suppresses: ' away' (-0.028), ' appointed' (-0.027), ' orchestr' (-0.021), '�' (-0.021), ' induced' (-0.020)
+
+Neuron  822 | fire=74% | mean=0.152 | max=2.00
+  Triggers: 'Q' (2.00), ' day' (1.50), ' hit' (1.42), ' day' (1.41), ' 500' (1.39), ' year' (1.36), ' sharply' (1.33), ' day' (1.32)
+  Top context: 'Q'
+  Output boosts: 'ports' (+0.039), '�' (+0.037), '�' (+0.036), '�' (+0.035), 'issance' (+0.033)
+  Output suppresses: '));' (-0.084), '");' (-0.083), '.);' (-0.082), ' *);' (-0.082), ')];' (-0.080)
+
+Neuron 1057 | fire=74% | mean=0.145 | max=1.39
+  Triggers: ' why' (1.39), ' Jordan' (1.34), '(' (1.29), ':' (1.21), ' to' (1.09), 'def' (1.07), 'forward' (1.05), ' where' (1.02)
+  Top context: ' don' ''t' ' understand' ' why'
+  Output boosts: '�' (+0.036), '��' (+0.034), '�' (+0.027), '�' (+0.024), '�' (+0.019)
+  Output suppresses: ' forb' (-0.114), 'uggest' (-0.114), 'ateral' (-0.113), ' dismiss' (-0.112), ' method' (-0.110)
+
+Neuron 1321 | fire=74% | mean=0.138 | max=1.33
+  Triggers: 'mid' (1.33), 'left' (1.22), ' In' (1.12), ' asked' (1.08), ' tel' (1.02), 'left' (1.00), ',' (1.00), ' hypers' (0.88)
+  Top context: ':' '
+' '        ' 'mid'
+  Output boosts: 'NOTES' (+0.105), 'chter' (+0.098), '"}](#' (+0.094), '*{' (+0.093), 'lle' (+0.092)
+  Output suppresses: 'keit' (-0.031), 'rowser' (-0.030), '?).' (-0.020), 'ól' (-0.017), '�' (-0.017)
+
+Neuron 1556 | fire=74% | mean=0.140 | max=1.56
+  Triggers: ' identical' (1.56), ' different' (1.43), ' hours' (1.37), ' smaller' (1.22), ' smaller' (1.18), ' chlor' (1.13), 'thermal' (1.03), ' of' (0.90)
+  Top context: ' produce' ' two' ' genetically' ' identical'
+  Output boosts: ' cref' (+0.055), 'selves' (+0.052), 'documentclass' (+0.049), 'theless' (+0.045), 'NFTA' (+0.045)
+  Output suppresses: ' vodka' (-0.088), ' morphine' (-0.078), ' ov' (-0.077), ' embargo' (-0.075), ' ed' (-0.074)
+
+Neuron  798 | fire=74% | mean=0.134 | max=1.16
+  Triggers: 'iction' (1.16), 'try' (1.06), ' on' (1.05), ' Technology' (0.95), '&' (0.92), 'ense' (0.86), ' new' (0.79), ' about' (0.72)
+  Top context: ' adding' ' cache' ' ev' 'iction'
+  Output boosts: ' dehydrogenase' (+0.102), 'INGTON' (+0.101), 'cester' (+0.100), 'epi' (+0.099), ' totality' (+0.098)
+  Output suppresses: 'icki' (-0.016), '*](#' (-0.014), 'ive' (-0.012), '��' (-0.009), 'naire' (-0.008)
+
+--- Top 30 Sparse Feature Detectors (1-5% fire rate, by max activation) ---
+
+Neuron   29 | fire=2.4% | max=10.11
+  Triggers: '
+' (10.11), '
+' (9.82), '
+' (8.20), '.' (7.70), '
+' (7.63), '.' (7.54), '.' (7.52), '.' (7.49)
+  Top context: ' numpy' ' as' ' np' '
+'
+  Output boosts: '��' (+0.056), '��' (+0.045), '�' (+0.040), '��' (+0.039), '��' (+0.030)
+  Output suppresses: ' formula' (-0.228), ' plots' (-0.227), ' plot' (-0.225), 'cars' (-0.215), 'plots' (-0.213)
+
+Neuron  472 | fire=1.8% | max=9.58
+  Triggers: ' fetch' (9.58), ' ham' (7.75), 'Scient' (6.32), 'Step' (6.14), 'Rain' (5.90), 'async' (5.85), 'Photos' (5.71), 'Data' (5.65)
+  Top context: 'async' ' function' ' fetch'
+  Output boosts: '�' (+0.323), '�' (+0.318), '�' (+0.304), '�' (+0.288), '�' (+0.284)
+  Output suppresses: 'ches' (-0.284), 'iculously' (-0.260), ' https' (-0.257), 'Expand' (-0.255), ' opener' (-0.245)
+
+Neuron 1278 | fire=1.7% | max=8.72
+  Triggers: '
+' (8.72), '
+' (8.52), '
+' (7.98), '.' (7.65), '.' (7.63), '.' (7.59), '
+' (7.36), '.' (7.20)
+  Top context: ' Linked' 'List' ':' '
+'
+  Output boosts: 'ogenous' (+0.096), 'ospor' (+0.093), ' >::' (+0.089), 'ortune' (+0.087), '��' (+0.087)
+  Output suppresses: ' translations' (-0.097), ' somewhere' (-0.085), ' cake' (-0.084), 'oom' (-0.084), ' accounting' (-0.083)
+
+Neuron  437 | fire=3.2% | max=8.70
+  Triggers: '.' (8.70), '.' (8.34), '.' (8.28), '.' (8.22), '.' (8.19), '.' (8.06), '.' (7.98), '.' (7.92)
+  Top context: ' the' ' lazy' ' dog' '.'
+  Output boosts: '��' (+0.015), '�' (+0.012), '��' (+0.011), '' (+0.004), '' (+0.004)
+  Output suppresses: 'upp' (-0.210), 'ens' (-0.206), ' sense' (-0.206), ' formula' (-0.197), 'reich' (-0.195)
+
+Neuron  889 | fire=1.8% | max=7.56
+  Triggers: '
+' (7.56), '
+' (7.13), '
+' (6.53), '
+' (6.09), '
+' (5.92), '
+' (5.85), '.' (5.82), '.' (5.79)
+  Top context: ' Python' ' application' '?' '
+'
+  Output boosts: '�' (+0.062), '��' (+0.052), 'llo' (+0.044), '�' (+0.033), '/-/' (+0.029)
+  Output suppresses: ' table' (-0.234), 'reich' (-0.225), ' tables' (-0.216), ' column' (-0.215), ' formula' (-0.205)
+
+Neuron 1031 | fire=1.7% | max=5.64
+  Triggers: '
+' (5.64), '
+' (5.46), '.' (5.41), '.' (5.38), '.' (5.37), '
+' (5.26), '.' (5.24), '.' (5.20)
+  Top context: ' Python' ' application' '?' '
+'
+  Output boosts: '<!' (+0.081), 'qrt' (+0.079), '﻿' (+0.074), 'package' (+0.074), 'namespace' (+0.072)
+  Output suppresses: ' worse' (-0.086), ' Figure' (-0.080), ' elsewhere' (-0.079), ' appendix' (-0.077), ' _,' (-0.073)
+
+Neuron 1603 | fire=1.8% | max=5.17
+  Triggers: 'Mit' (5.17), 'Global' (4.64), 'In' (4.28), 'Q' (4.18), 'Scient' (4.13), 'She' (3.93), 'Monday' (3.61), 'The' (3.17)
+  Top context: 'Mit'
+  Output boosts: '�' (+0.557), '�' (+0.543), '�' (+0.527), '��' (+0.515), '�' (+0.503)
+  Output suppresses: 'iculously' (-0.501), ' panels' (-0.500), 'ITION' (-0.482), ' opener' (-0.482), ' https' (-0.477)
+
+--- Ultra-Sparse Neurons (<1% fire rate but fired at least once) ---
+
+  Neuron 1227 | fire=0.91% | max=3.24 | triggers: 'H' (3.24), 'Al' (2.47), 'Inter' (1.64), 'The' (0.94), 'The' (0.94)
+
+--- Truly Dead Neurons (never fired): 0 ---

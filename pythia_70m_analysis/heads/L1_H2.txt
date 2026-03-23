@@ -1,0 +1,550 @@
+=== Layer 1, Head 2 ===
+Samples: 30 | Positions: 2170
+
+--- Aggregate Stats ---
+Mean entropy: 1.642
+Self-attention top-1 rate: 16.4%
+Previous-token top-1 rate: 32.5%
+BOS/first-token top-1 rate: 2.6%
+Mean top-1 offset (positions back): 9.8
+Median top-1 offset: 2
+Top-1 offset distribution: 0=16%, 1=32%, 2-5=14%, 6+=37%
+
+--- Sample 0 [news] (66 tokens): 'The' ' European' ' Union' ' announced' ' new' ' regulations' ' on' ' artificial' ... ---
+  ' European'@1 -> 'The'@0 (0.80)  ' European'@1 (0.20)
+  ' Union'@2 -> ' European'@1 (0.60)  'The'@0 (0.38)  ' Union'@2 (0.03)
+  ' announced'@3 -> ' announced'@3 (0.56)  'The'@0 (0.37)  ' European'@1 (0.04)
+  ' new'@4 -> 'The'@0 (0.48)  ' announced'@3 (0.34)  ' new'@4 (0.16)
+  ' regulations'@5 -> 'The'@0 (0.77)  ' new'@4 (0.08)  ' announced'@3 (0.07)
+  ' on'@6 -> ' regulations'@5 (0.68)  ' on'@6 (0.16)  'The'@0 (0.14)
+  ' artificial'@7 -> ' artificial'@7 (0.37)  'The'@0 (0.35)  ' on'@6 (0.20)
+  ' intelligence'@8 -> ' artificial'@7 (0.51)  ' intelligence'@8 (0.19)  'The'@0 (0.15)
+  ' on'@9 -> ' on'@9 (0.27)  ' artificial'@7 (0.24)  ' intelligence'@8 (0.17)
+  ' Tuesday'@10 -> 'The'@0 (0.49)  ' on'@9 (0.25)  ' Tuesday'@10 (0.13)
+  ','@11 -> ' Tuesday'@10 (0.44)  'The'@0 (0.31)  ','@11 (0.23)
+  ' requiring'@12 -> ','@11 (0.39)  ' requiring'@12 (0.37)  'The'@0 (0.15)
+  ' companies'@13 -> ','@11 (0.34)  ' companies'@13 (0.31)  ' requiring'@12 (0.18)
+  ' to'@14 -> ' requiring'@12 (0.89)  ' to'@14 (0.09)  ','@11 (0.01)
+  [remaining 51 positions: self=22%, prev=16%]
+
+--- Sample 1 [news] (68 tokens): 'H' 'ur' 'ricane' ' Maria' ' made' ' land' 'fall' ' along' ... ---
+  'ur'@1 -> 'H'@0 (0.96)  'ur'@1 (0.04)
+  'ricane'@2 -> 'ur'@1 (0.66)  'H'@0 (0.18)  'ricane'@2 (0.15)
+  ' Maria'@3 -> ' Maria'@3 (0.53)  'ricane'@2 (0.31)  'ur'@1 (0.15)
+  ' made'@4 -> ' made'@4 (0.94)  ' Maria'@3 (0.05)  'ricane'@2 (0.01)
+  ' land'@5 -> ' made'@4 (0.48)  ' land'@5 (0.29)  ' Maria'@3 (0.23)
+  'fall'@6 -> ' land'@5 (0.42)  ' made'@4 (0.33)  'fall'@6 (0.23)
+  ' along'@7 -> ' along'@7 (0.84)  ' made'@4 (0.07)  'fall'@6 (0.06)
+  ' the'@8 -> ' along'@7 (0.79)  ' the'@8 (0.17)  'fall'@6 (0.02)
+  ' Gulf'@9 -> ' the'@8 (0.79)  ' Gulf'@9 (0.08)  ' along'@7 (0.07)
+  ' Coast'@10 -> ' Gulf'@9 (0.41)  ' the'@8 (0.32)  ' Coast'@10 (0.23)
+  ' early'@11 -> ' the'@8 (0.67)  ' made'@4 (0.21)  ' early'@11 (0.09)
+  ' Wednesday'@12 -> ' early'@11 (0.64)  ' the'@8 (0.25)  ' Wednesday'@12 (0.10)
+  ' morning'@13 -> ' Wednesday'@12 (0.45)  ' morning'@13 (0.37)  ' early'@11 (0.09)
+  ','@14 -> ','@14 (0.54)  ' the'@8 (0.23)  ' morning'@13 (0.17)
+  [remaining 53 positions: self=11%, prev=21%]
+
+--- Sample 2 [news] (74 tokens): 'Global' ' stock' ' markets' ' fell' ' sharply' ' on' ' Monday' ' after' ... ---
+  ' stock'@1 -> 'Global'@0 (0.50)  ' stock'@1 (0.50)
+  ' markets'@2 -> ' stock'@1 (0.55)  ' markets'@2 (0.37)  'Global'@0 (0.08)
+  ' fell'@3 -> ' fell'@3 (0.73)  ' markets'@2 (0.14)  ' stock'@1 (0.10)
+  ' sharply'@4 -> ' fell'@3 (0.85)  ' sharply'@4 (0.14)  ' markets'@2 (0.00)
+  ' on'@5 -> ' fell'@3 (0.54)  ' on'@5 (0.34)  ' sharply'@4 (0.12)
+  ' Monday'@6 -> ' on'@5 (0.77)  ' Monday'@6 (0.21)  ' fell'@3 (0.01)
+  ' after'@7 -> ' Monday'@6 (0.48)  ' after'@7 (0.33)  ' fell'@3 (0.08)
+  ' the'@8 -> ' after'@7 (0.51)  ' the'@8 (0.33)  ' Monday'@6 (0.14)
+  ' Federal'@9 -> ' Federal'@9 (0.51)  ' the'@8 (0.39)  'Global'@0 (0.03)
+  ' Reserve'@10 -> ' Federal'@9 (0.53)  ' the'@8 (0.22)  ' Reserve'@10 (0.20)
+  ' signaled'@11 -> ' the'@8 (0.49)  ' signaled'@11 (0.42)  ' after'@7 (0.03)
+  ' it'@12 -> ' signaled'@11 (0.85)  ' the'@8 (0.12)  ' it'@12 (0.02)
+  ' would'@13 -> ' it'@12 (0.33)  ' the'@8 (0.33)  ' signaled'@11 (0.25)
+  ' keep'@14 -> ' the'@8 (0.35)  ' it'@12 (0.26)  ' would'@13 (0.21)
+  [remaining 59 positions: self=8%, prev=31%]
+
+--- Sample 3 [news] (72 tokens): 'Scient' 'ists' ' at' ' the' ' Max' ' Planck' ' Institute' ' have' ... ---
+  'ists'@1 -> 'ists'@1 (0.62)  'Scient'@0 (0.38)
+  ' at'@2 -> ' at'@2 (0.59)  'ists'@1 (0.32)  'Scient'@0 (0.09)
+  ' the'@3 -> ' at'@2 (0.72)  ' the'@3 (0.20)  'ists'@1 (0.06)
+  ' Max'@4 -> ' the'@3 (0.65)  ' at'@2 (0.27)  ' Max'@4 (0.04)
+  ' Planck'@5 -> ' Max'@4 (0.94)  'Scient'@0 (0.03)  ' Planck'@5 (0.02)
+  ' Institute'@6 -> ' Institute'@6 (0.50)  ' Max'@4 (0.32)  ' the'@3 (0.14)
+  ' have'@7 -> ' the'@3 (0.32)  ' have'@7 (0.22)  ' at'@2 (0.18)
+  ' discovered'@8 -> ' the'@3 (0.42)  ' discovered'@8 (0.18)  ' at'@2 (0.09)
+  ' a'@9 -> ' the'@3 (0.41)  ' discovered'@8 (0.37)  ' a'@9 (0.16)
+  ' new'@10 -> ' the'@3 (0.70)  ' discovered'@8 (0.19)  ' at'@2 (0.03)
+  ' species'@11 -> ' the'@3 (0.53)  ' species'@11 (0.37)  ' new'@10 (0.04)
+  ' of'@12 -> ' species'@11 (0.88)  ' of'@12 (0.08)  ' new'@10 (0.02)
+  ' deep'@13 -> ' the'@3 (0.39)  ' of'@12 (0.36)  ' deep'@13 (0.13)
+  '-'@14 -> ' deep'@13 (1.00)  '-'@14 (0.00)  ' of'@12 (0.00)
+  [remaining 57 positions: self=19%, prev=23%]
+
+--- Sample 4 [news] (58 tokens): 'The' ' World' ' Health' ' Organization' ' reported' ' that' ' global' ' measles' ... ---
+  ' World'@1 -> 'The'@0 (0.89)  ' World'@1 (0.11)
+  ' Health'@2 -> ' World'@1 (0.88)  'The'@0 (0.09)  ' Health'@2 (0.03)
+  ' Organization'@3 -> ' Health'@2 (0.33)  'The'@0 (0.30)  ' World'@1 (0.19)
+  ' reported'@4 -> ' reported'@4 (0.69)  'The'@0 (0.29)  ' Organization'@3 (0.01)
+  ' that'@5 -> ' reported'@4 (0.63)  ' that'@5 (0.31)  'The'@0 (0.05)
+  ' global'@6 -> ' global'@6 (0.51)  'The'@0 (0.40)  ' that'@5 (0.05)
+  ' measles'@7 -> 'The'@0 (0.43)  ' measles'@7 (0.30)  ' global'@6 (0.19)
+  ' cases'@8 -> 'The'@0 (0.37)  ' cases'@8 (0.24)  ' measles'@7 (0.23)
+  ' increased'@9 -> 'The'@0 (0.37)  ' increased'@9 (0.24)  ' cases'@8 (0.14)
+  ' by'@10 -> ' by'@10 (0.85)  ' increased'@9 (0.13)  ' cases'@8 (0.01)
+  ' 30'@11 -> ' by'@10 (0.95)  'The'@0 (0.04)  ' 30'@11 (0.01)
+  ' percent'@12 -> ' 30'@11 (0.68)  ' by'@10 (0.24)  ' percent'@12 (0.05)
+  ' last'@13 -> ' last'@13 (0.37)  'The'@0 (0.33)  ' percent'@12 (0.10)
+  ' year'@14 -> ' last'@13 (0.94)  'The'@0 (0.02)  ' year'@14 (0.01)
+  [remaining 43 positions: self=21%, prev=19%]
+
+--- Sample 5 [technical] (73 tokens): 'The' ' transformer' ' architecture' ' consists' ' of' ' an' ' encoder' ' and' ... ---
+  ' transformer'@1 -> 'The'@0 (0.82)  ' transformer'@1 (0.18)
+  ' architecture'@2 -> 'The'@0 (0.71)  ' architecture'@2 (0.16)  ' transformer'@1 (0.14)
+  ' consists'@3 -> ' consists'@3 (0.43)  'The'@0 (0.40)  ' architecture'@2 (0.13)
+  ' of'@4 -> ' consists'@3 (0.47)  ' of'@4 (0.37)  'The'@0 (0.10)
+  ' an'@5 -> ' of'@4 (0.43)  'The'@0 (0.27)  ' consists'@3 (0.14)
+  ' encoder'@6 -> 'The'@0 (0.65)  ' encoder'@6 (0.19)  ' an'@5 (0.05)
+  ' and'@7 -> ' encoder'@6 (0.94)  'The'@0 (0.04)  ' and'@7 (0.01)
+  ' decoder'@8 -> 'The'@0 (0.35)  ' decoder'@8 (0.22)  ' encoder'@6 (0.12)
+  ','@9 -> 'The'@0 (0.59)  ','@9 (0.24)  ' decoder'@8 (0.10)
+  ' each'@10 -> ','@9 (0.53)  'The'@0 (0.17)  ' consists'@3 (0.14)
+  ' built'@11 -> ','@9 (0.56)  'The'@0 (0.20)  ' built'@11 (0.10)
+  ' from'@12 -> ' from'@12 (0.60)  ' built'@11 (0.24)  ','@9 (0.10)
+  ' stacked'@13 -> ','@9 (0.46)  ' from'@12 (0.20)  'The'@0 (0.16)
+  ' layers'@14 -> ','@9 (0.53)  'The'@0 (0.23)  ' layers'@14 (0.14)
+  [remaining 58 positions: self=17%, prev=21%]
+
+--- Sample 6 [technical] (72 tokens): 'Photos' 'ynthesis' ' occurs' ' in' ' two' ' main' ' stages' ':' ... ---
+  'ynthesis'@1 -> 'ynthesis'@1 (0.61)  'Photos'@0 (0.39)
+  ' occurs'@2 -> ' occurs'@2 (0.92)  'ynthesis'@1 (0.05)  'Photos'@0 (0.03)
+  ' in'@3 -> ' in'@3 (0.85)  ' occurs'@2 (0.12)  'ynthesis'@1 (0.02)
+  ' two'@4 -> ' in'@3 (0.94)  ' two'@4 (0.02)  ' occurs'@2 (0.02)
+  ' main'@5 -> ' in'@3 (0.58)  ' main'@5 (0.25)  ' two'@4 (0.10)
+  ' stages'@6 -> ' main'@5 (0.59)  ' stages'@6 (0.19)  ' in'@3 (0.12)
+  ':'@7 -> ':'@7 (0.65)  ' main'@5 (0.14)  ' in'@3 (0.06)
+  ' the'@8 -> ' the'@8 (0.44)  ':'@7 (0.36)  ' stages'@6 (0.07)
+  ' light'@9 -> ' the'@8 (0.75)  ':'@7 (0.12)  ' light'@9 (0.08)
+  '-'@10 -> ' light'@9 (0.98)  ' the'@8 (0.01)  '-'@10 (0.01)
+  'dependent'@11 -> ' the'@8 (0.27)  ' light'@9 (0.22)  ':'@7 (0.19)
+  ' reactions'@12 -> ' the'@8 (0.55)  'dependent'@11 (0.17)  ':'@7 (0.14)
+  ' and'@13 -> ':'@7 (0.59)  ' the'@8 (0.28)  ' and'@13 (0.09)
+  ' the'@14 -> ' and'@13 (0.81)  ':'@7 (0.07)  ' the'@8 (0.06)
+  [remaining 57 positions: self=11%, prev=16%]
+
+--- Sample 7 [technical] (69 tokens): 'In' ' therm' 'odynamics' ',' ' entropy' ' is' ' a' ' measure' ... ---
+  ' therm'@1 -> ' therm'@1 (0.79)  'In'@0 (0.21)
+  'odynamics'@2 -> 'odynamics'@2 (0.49)  'In'@0 (0.26)  ' therm'@1 (0.25)
+  ','@3 -> ','@3 (0.95)  'odynamics'@2 (0.04)  ' therm'@1 (0.01)
+  ' entropy'@4 -> ','@3 (0.74)  ' entropy'@4 (0.21)  'odynamics'@2 (0.04)
+  ' is'@5 -> ','@3 (0.70)  ' is'@5 (0.27)  ' entropy'@4 (0.02)
+  ' a'@6 -> ' is'@5 (0.67)  ','@3 (0.27)  ' a'@6 (0.04)
+  ' measure'@7 -> ','@3 (0.55)  ' is'@5 (0.19)  ' measure'@7 (0.13)
+  ' of'@8 -> ' measure'@7 (0.94)  ' of'@8 (0.04)  ','@3 (0.01)
+  ' the'@9 -> ' of'@8 (0.31)  ','@3 (0.24)  ' measure'@7 (0.19)
+  ' disorder'@10 -> ' the'@9 (0.37)  ' disorder'@10 (0.30)  ','@3 (0.27)
+  ' or'@11 -> ' disorder'@10 (0.52)  ','@3 (0.22)  ' the'@9 (0.21)
+  ' random'@12 -> ','@3 (0.29)  ' the'@9 (0.23)  ' or'@11 (0.22)
+  'ness'@13 -> ' random'@12 (0.43)  'ness'@13 (0.41)  ' the'@9 (0.07)
+  ' of'@14 -> 'ness'@13 (0.44)  ' of'@14 (0.17)  ' the'@9 (0.11)
+  [remaining 54 positions: self=13%, prev=17%]
+
+--- Sample 8 [technical] (73 tokens): 'The' ' fast' ' Fourier' ' transform' ' reduces' ' the' ' computational' ' complexity' ... ---
+  ' fast'@1 -> 'The'@0 (0.80)  ' fast'@1 (0.20)
+  ' Fourier'@2 -> ' Fourier'@2 (0.76)  ' fast'@1 (0.20)  'The'@0 (0.04)
+  ' transform'@3 -> ' Fourier'@2 (0.55)  'The'@0 (0.18)  ' transform'@3 (0.15)
+  ' reduces'@4 -> 'The'@0 (0.61)  ' reduces'@4 (0.32)  ' Fourier'@2 (0.04)
+  ' the'@5 -> 'The'@0 (0.41)  ' the'@5 (0.30)  ' reduces'@4 (0.29)
+  ' computational'@6 -> 'The'@0 (0.56)  ' the'@5 (0.30)  ' computational'@6 (0.09)
+  ' complexity'@7 -> 'The'@0 (0.45)  ' the'@5 (0.30)  ' computational'@6 (0.19)
+  ' of'@8 -> ' of'@8 (0.61)  ' the'@5 (0.21)  'The'@0 (0.14)
+  ' computing'@9 -> 'The'@0 (0.39)  ' the'@5 (0.31)  ' of'@8 (0.13)
+  ' the'@10 -> ' computing'@9 (0.65)  ' the'@10 (0.13)  'The'@0 (0.10)
+  ' discrete'@11 -> ' the'@10 (0.45)  ' the'@5 (0.27)  'The'@0 (0.13)
+  ' Fourier'@12 -> ' discrete'@11 (0.75)  ' Fourier'@12 (0.08)  ' the'@10 (0.07)
+  ' transform'@13 -> ' Fourier'@12 (0.32)  ' transform'@13 (0.21)  'The'@0 (0.17)
+  ' from'@14 -> ' from'@14 (0.52)  ' transform'@13 (0.14)  ' reduces'@4 (0.10)
+  [remaining 58 positions: self=19%, prev=28%]
+
+--- Sample 9 [technical] (79 tokens): 'Mit' 'osis' ' is' ' the' ' process' ' by' ' which' ' a' ... ---
+  'osis'@1 -> 'Mit'@0 (0.64)  'osis'@1 (0.36)
+  ' is'@2 -> ' is'@2 (0.97)  'osis'@1 (0.02)  'Mit'@0 (0.00)
+  ' the'@3 -> ' is'@2 (0.77)  ' the'@3 (0.18)  'osis'@1 (0.04)
+  ' process'@4 -> ' process'@4 (0.61)  ' the'@3 (0.34)  ' is'@2 (0.03)
+  ' by'@5 -> ' by'@5 (0.77)  ' the'@3 (0.08)  ' is'@2 (0.07)
+  ' which'@6 -> ' by'@5 (0.92)  ' which'@6 (0.08)  ' the'@3 (0.00)
+  ' a'@7 -> ' the'@3 (0.48)  ' by'@5 (0.25)  ' a'@7 (0.18)
+  ' single'@8 -> ' the'@3 (0.33)  ' a'@7 (0.32)  ' by'@5 (0.27)
+  ' cell'@9 -> ' single'@8 (0.70)  ' cell'@9 (0.14)  ' the'@3 (0.13)
+  ' divides'@10 -> ' the'@3 (0.81)  ' divides'@10 (0.04)  ' single'@8 (0.04)
+  ' to'@11 -> ' to'@11 (0.75)  ' divides'@10 (0.13)  ' the'@3 (0.05)
+  ' produce'@12 -> ' to'@11 (0.56)  ' produce'@12 (0.22)  ' the'@3 (0.13)
+  ' two'@13 -> ' the'@3 (0.61)  ' to'@11 (0.28)  ' produce'@12 (0.07)
+  ' genetically'@14 -> ' the'@3 (0.37)  ' genetically'@14 (0.32)  ' to'@11 (0.19)
+  [remaining 64 positions: self=16%, prev=16%]
+
+--- Sample 10 [code] (88 tokens): 'def' ' binary' '_' 'search' '(' 'arr' ',' ' target' ... ---
+  ' binary'@1 -> ' binary'@1 (0.89)  'def'@0 (0.11)
+  '_'@2 -> ' binary'@1 (0.87)  '_'@2 (0.12)  'def'@0 (0.01)
+  'search'@3 -> '_'@2 (0.78)  'search'@3 (0.11)  ' binary'@1 (0.09)
+  '('@4 -> 'def'@0 (0.28)  '('@4 (0.23)  '_'@2 (0.19)
+  'arr'@5 -> '('@4 (0.84)  'def'@0 (0.06)  'arr'@5 (0.06)
+  ','@6 -> ','@6 (0.66)  'arr'@5 (0.27)  ' binary'@1 (0.03)
+  ' target'@7 -> ','@6 (0.77)  ' target'@7 (0.14)  ' binary'@1 (0.04)
+  '):'@8 -> '):'@8 (0.57)  ','@6 (0.19)  ' target'@7 (0.09)
+  '
+'@9 -> '):'@8 (0.53)  ' target'@7 (0.17)  ','@6 (0.11)
+  '    '@10 -> '):'@8 (0.38)  '    '@10 (0.18)  '
+'@9 (0.15)
+  'left'@11 -> '):'@8 (0.25)  '    '@10 (0.24)  ','@6 (0.17)
+  ','@12 -> ','@12 (0.44)  'left'@11 (0.24)  '):'@8 (0.17)
+  ' right'@13 -> ','@12 (0.47)  ','@6 (0.27)  '):'@8 (0.12)
+  ' ='@14 -> ','@12 (0.44)  '):'@8 (0.27)  ' ='@14 (0.14)
+  [remaining 73 positions: self=8%, prev=48%]
+
+--- Sample 11 [code] (82 tokens): 'class' ' Linked' 'List' ':' '
+' '    ' 'def' ' __' ... ---
+  ' Linked'@1 -> 'class'@0 (0.76)  ' Linked'@1 (0.24)
+  'List'@2 -> ' Linked'@1 (0.66)  'class'@0 (0.23)  'List'@2 (0.11)
+  ':'@3 -> ':'@3 (0.91)  'List'@2 (0.06)  'class'@0 (0.03)
+  '
+'@4 -> ':'@3 (0.73)  'List'@2 (0.19)  '
+'@4 (0.07)
+  '    '@5 -> ':'@3 (0.62)  '
+'@4 (0.18)  '    '@5 (0.10)
+  'def'@6 -> '    '@5 (0.53)  ':'@3 (0.24)  'def'@6 (0.08)
+  ' __'@7 -> 'def'@6 (0.68)  '    '@5 (0.10)  'class'@0 (0.09)
+  'init'@8 -> ' __'@7 (0.54)  'def'@6 (0.38)  'init'@8 (0.06)
+  '__('@9 -> '__('@9 (0.84)  'def'@6 (0.08)  'init'@8 (0.04)
+  'self'@10 -> 'def'@6 (0.62)  '__('@9 (0.27)  ':'@3 (0.04)
+  '):'@11 -> '):'@11 (0.30)  'self'@10 (0.23)  '    '@5 (0.22)
+  '
+'@12 -> '):'@11 (0.82)  'self'@10 (0.05)  '    '@5 (0.04)
+  '        '@13 -> '):'@11 (0.46)  '
+'@12 (0.11)  'self'@10 (0.10)
+  'self'@14 -> 'def'@6 (0.65)  '        '@13 (0.14)  '):'@11 (0.09)
+  [remaining 67 positions: self=16%, prev=43%]
+
+--- Sample 12 [code] (114 tokens): 'import' ' numpy' ' as' ' np' '
+' 'import' ' mat' 'plot' ... ---
+  ' numpy'@1 -> 'import'@0 (0.75)  ' numpy'@1 (0.25)
+  ' as'@2 -> ' numpy'@1 (0.85)  'import'@0 (0.11)  ' as'@2 (0.04)
+  ' np'@3 -> ' as'@2 (0.54)  'import'@0 (0.23)  ' np'@3 (0.15)
+  '
+'@4 -> '
+'@4 (0.70)  ' np'@3 (0.17)  ' as'@2 (0.09)
+  'import'@5 -> '
+'@4 (0.37)  'import'@5 (0.31)  ' np'@3 (0.29)
+  ' mat'@6 -> 'import'@5 (0.76)  ' mat'@6 (0.10)  'import'@0 (0.08)
+  'plot'@7 -> ' mat'@6 (0.89)  'import'@5 (0.08)  'plot'@7 (0.02)
+  'lib'@8 -> 'plot'@7 (0.70)  ' mat'@6 (0.12)  'import'@5 (0.10)
+  '.'@9 -> '.'@9 (0.55)  'lib'@8 (0.22)  'plot'@7 (0.19)
+  'py'@10 -> '.'@9 (0.56)  'py'@10 (0.20)  'lib'@8 (0.11)
+  'plot'@11 -> 'import'@5 (0.33)  'py'@10 (0.27)  '.'@9 (0.20)
+  ' as'@12 -> 'import'@5 (0.66)  ' as'@12 (0.20)  '.'@9 (0.06)
+  ' pl'@13 -> '.'@9 (0.72)  ' as'@12 (0.10)  ' pl'@13 (0.07)
+  't'@14 -> ' pl'@13 (0.70)  '.'@9 (0.16)  'plot'@7 (0.08)
+  [remaining 99 positions: self=5%, prev=63%]
+
+--- Sample 13 [code] (64 tokens): 'SELECT' ' customers' '.' 'name' ',' ' orders' '.' 'total' ... ---
+  ' customers'@1 -> ' customers'@1 (0.66)  'SELECT'@0 (0.34)
+  '.'@2 -> '.'@2 (0.89)  'SELECT'@0 (0.06)  ' customers'@1 (0.05)
+  'name'@3 -> '.'@2 (0.83)  ' customers'@1 (0.09)  'name'@3 (0.04)
+  ','@4 -> ','@4 (0.60)  '.'@2 (0.31)  'name'@3 (0.09)
+  ' orders'@5 -> ','@4 (0.58)  '.'@2 (0.32)  ' orders'@5 (0.10)
+  '.'@6 -> '.'@6 (0.46)  ','@4 (0.39)  '.'@2 (0.09)
+  'total'@7 -> '.'@6 (0.45)  'total'@7 (0.18)  '.'@2 (0.17)
+  '
+'@8 -> '.'@6 (0.35)  'total'@7 (0.34)  '.'@2 (0.28)
+  'FROM'@9 -> '.'@2 (0.44)  '.'@6 (0.16)  ','@4 (0.13)
+  ' customers'@10 -> '.'@2 (0.25)  ' customers'@10 (0.25)  'FROM'@9 (0.21)
+  '
+'@11 -> ' customers'@10 (0.51)  'FROM'@9 (0.18)  ','@4 (0.14)
+  'IN'@12 -> '
+'@11 (0.41)  '.'@6 (0.19)  'IN'@12 (0.16)
+  'NER'@13 -> 'IN'@12 (0.60)  'NER'@13 (0.28)  '.'@6 (0.05)
+  ' JOIN'@14 -> '.'@2 (0.39)  '.'@6 (0.21)  ' JOIN'@14 (0.13)
+  [remaining 49 positions: self=18%, prev=39%]
+
+--- Sample 14 [code] (95 tokens): 'async' ' function' ' fetch' 'Data' '(' 'url' ')' ' {' ... ---
+  ' function'@1 -> ' function'@1 (0.69)  'async'@0 (0.31)
+  ' fetch'@2 -> ' fetch'@2 (0.51)  ' function'@1 (0.45)  'async'@0 (0.04)
+  'Data'@3 -> ' fetch'@2 (0.85)  'Data'@3 (0.12)  ' function'@1 (0.03)
+  '('@4 -> ' function'@1 (0.47)  '('@4 (0.25)  ' fetch'@2 (0.16)
+  'url'@5 -> '('@4 (0.83)  'url'@5 (0.12)  'Data'@3 (0.02)
+  ')'@6 -> ' function'@1 (0.84)  'async'@0 (0.07)  ')'@6 (0.05)
+  ' {'@7 -> ' function'@1 (0.86)  ' {'@7 (0.06)  ' fetch'@2 (0.03)
+  '
+'@8 -> ' {'@7 (0.46)  ')'@6 (0.38)  '
+'@8 (0.14)
+  '    '@9 -> '
+'@8 (0.28)  ')'@6 (0.28)  ' {'@7 (0.23)
+  'try'@10 -> '    '@9 (0.55)  ')'@6 (0.18)  '
+'@8 (0.09)
+  ' {'@11 -> 'try'@10 (0.95)  '    '@9 (0.02)  ' function'@1 (0.01)
+  '
+'@12 -> ' {'@11 (0.57)  ')'@6 (0.26)  'try'@10 (0.09)
+  '        '@13 -> ')'@6 (0.35)  '
+'@12 (0.26)  ' {'@11 (0.16)
+  'const'@14 -> '        '@13 (0.32)  ')'@6 (0.26)  'const'@14 (0.16)
+  [remaining 80 positions: self=12%, prev=51%]
+
+--- Sample 15 [dialogue] (80 tokens): '"' 'What' ' do' ' you' ' think' ' about' ' the' ' new' ... ---
+  'What'@1 -> '"'@0 (0.81)  'What'@1 (0.19)
+  ' do'@2 -> 'What'@1 (0.75)  ' do'@2 (0.25)  '"'@0 (0.00)
+  ' you'@3 -> ' do'@2 (0.99)  ' you'@3 (0.01)  'What'@1 (0.01)
+  ' think'@4 -> ' do'@2 (0.63)  ' think'@4 (0.18)  ' you'@3 (0.14)
+  ' about'@5 -> ' think'@4 (0.68)  ' about'@5 (0.17)  ' do'@2 (0.10)
+  ' the'@6 -> ' the'@6 (0.52)  '"'@0 (0.24)  ' about'@5 (0.15)
+  ' new'@7 -> ' the'@6 (0.75)  '"'@0 (0.19)  ' new'@7 (0.04)
+  ' policy'@8 -> ' the'@6 (0.44)  ' policy'@8 (0.39)  ' new'@7 (0.07)
+  '?"'@9 -> ' the'@6 (0.48)  '?"'@9 (0.40)  ' policy'@8 (0.07)
+  ' asked'@10 -> '?"'@9 (0.71)  ' the'@6 (0.22)  ' asked'@10 (0.04)
+  ' Sarah'@11 -> ' the'@6 (0.39)  '?"'@9 (0.35)  ' asked'@10 (0.16)
+  ','@12 -> '?"'@9 (0.48)  ','@12 (0.19)  ' the'@6 (0.19)
+  ' leaning'@13 -> ','@12 (0.39)  ' leaning'@13 (0.22)  ' the'@6 (0.21)
+  ' back'@14 -> ' leaning'@13 (0.85)  ','@12 (0.08)  ' back'@14 (0.04)
+  [remaining 65 positions: self=6%, prev=25%]
+
+--- Sample 16 [dialogue] (85 tokens): 'Q' ':' ' How' ' do' ' I' ' fix' ' a' ' memory' ... ---
+  ':'@1 -> 'Q'@0 (0.63)  ':'@1 (0.37)
+  ' How'@2 -> ':'@1 (0.63)  ' How'@2 (0.30)  'Q'@0 (0.08)
+  ' do'@3 -> ' How'@2 (0.53)  ' do'@3 (0.40)  ':'@1 (0.07)
+  ' I'@4 -> ' do'@3 (0.99)  ':'@1 (0.01)  ' How'@2 (0.00)
+  ' fix'@5 -> ' do'@3 (0.85)  ':'@1 (0.11)  ' I'@4 (0.02)
+  ' a'@6 -> ':'@1 (0.41)  ' fix'@5 (0.33)  ' a'@6 (0.22)
+  ' memory'@7 -> ' memory'@7 (0.36)  ' a'@6 (0.34)  ':'@1 (0.22)
+  ' leak'@8 -> ' memory'@7 (0.51)  ':'@1 (0.23)  ' leak'@8 (0.18)
+  ' in'@9 -> ' in'@9 (0.76)  ' leak'@8 (0.17)  ':'@1 (0.04)
+  ' my'@10 -> ' in'@9 (0.62)  ' my'@10 (0.25)  ' leak'@8 (0.10)
+  ' Python'@11 -> ' in'@9 (0.34)  ':'@1 (0.23)  ' Python'@11 (0.13)
+  ' application'@12 -> ' application'@12 (0.62)  ':'@1 (0.12)  ' in'@9 (0.09)
+  '?'@13 -> '?'@13 (0.50)  ':'@1 (0.41)  ' Python'@11 (0.03)
+  '
+'@14 -> '?'@13 (0.56)  ':'@1 (0.29)  '
+'@14 (0.11)
+  [remaining 70 positions: self=23%, prev=20%]
+
+--- Sample 17 [dialogue] (75 tokens): 'User' ':' ' Can' ' you' ' help' ' me' ' understand' ' recursion' ... ---
+  ':'@1 -> 'User'@0 (0.57)  ':'@1 (0.43)
+  ' Can'@2 -> ':'@1 (0.81)  'User'@0 (0.12)  ' Can'@2 (0.07)
+  ' you'@3 -> ' Can'@2 (0.88)  ' you'@3 (0.10)  ':'@1 (0.02)
+  ' help'@4 -> ' Can'@2 (0.35)  ':'@1 (0.30)  ' you'@3 (0.28)
+  ' me'@5 -> ' help'@4 (0.98)  ' me'@5 (0.02)  ':'@1 (0.00)
+  ' understand'@6 -> ' understand'@6 (0.28)  ' me'@5 (0.19)  ':'@1 (0.17)
+  ' recursion'@7 -> ' recursion'@7 (0.26)  ':'@1 (0.26)  ' me'@5 (0.22)
+  '?'@8 -> '?'@8 (0.56)  ':'@1 (0.26)  ' recursion'@7 (0.10)
+  '
+'@9 -> '?'@8 (0.61)  '
+'@9 (0.13)  ':'@1 (0.12)
+  'Ass'@10 -> '?'@8 (0.54)  '
+'@9 (0.28)  ':'@1 (0.07)
+  'istant'@11 -> 'istant'@11 (0.65)  'Ass'@10 (0.22)  '?'@8 (0.07)
+  ':'@12 -> ':'@12 (0.58)  '?'@8 (0.34)  'Ass'@10 (0.04)
+  ' Sure'@13 -> ':'@12 (0.48)  ':'@1 (0.20)  '?'@8 (0.13)
+  '!'@14 -> '!'@14 (0.43)  ':'@12 (0.26)  ':'@1 (0.13)
+  [remaining 60 positions: self=15%, prev=33%]
+
+--- Sample 18 [dialogue] (63 tokens): 'Inter' 'view' 'er' ':' ' Tell' ' me' ' about' ' your' ... ---
+  'view'@1 -> 'view'@1 (0.83)  'Inter'@0 (0.17)
+  'er'@2 -> 'er'@2 (0.72)  'view'@1 (0.27)  'Inter'@0 (0.01)
+  ':'@3 -> ':'@3 (0.65)  'er'@2 (0.24)  'view'@1 (0.12)
+  ' Tell'@4 -> ':'@3 (0.62)  ' Tell'@4 (0.23)  'er'@2 (0.12)
+  ' me'@5 -> ' Tell'@4 (0.92)  ' me'@5 (0.07)  ':'@3 (0.01)
+  ' about'@6 -> ' about'@6 (0.56)  ' me'@5 (0.16)  ':'@3 (0.16)
+  ' your'@7 -> ' your'@7 (0.43)  ' about'@6 (0.40)  ':'@3 (0.09)
+  ' experience'@8 -> ' about'@6 (0.36)  ' your'@7 (0.21)  ':'@3 (0.18)
+  ' with'@9 -> ' with'@9 (0.55)  ':'@3 (0.17)  ' your'@7 (0.16)
+  ' distributed'@10 -> ':'@3 (0.59)  ' distributed'@10 (0.14)  ' with'@9 (0.14)
+  ' systems'@11 -> ' distributed'@10 (0.41)  ' systems'@11 (0.36)  ':'@3 (0.13)
+  '.'@12 -> '.'@12 (0.65)  ':'@3 (0.21)  ' systems'@11 (0.08)
+  '
+'@13 -> '.'@12 (0.80)  ':'@3 (0.13)  '
+'@13 (0.03)
+  'C'@14 -> '.'@12 (0.57)  '
+'@13 (0.16)  ':'@3 (0.12)
+  [remaining 48 positions: self=10%, prev=12%]
+
+--- Sample 19 [dialogue] (73 tokens): '"' 'I' ' don' ''t' ' understand' ' why' ' the' ' tests' ... ---
+  'I'@1 -> '"'@0 (0.81)  'I'@1 (0.19)
+  ' don'@2 -> '"'@0 (0.38)  ' don'@2 (0.32)  'I'@1 (0.30)
+  ''t'@3 -> ' don'@2 (0.97)  ''t'@3 (0.03)  'I'@1 (0.00)
+  ' understand'@4 -> ' don'@2 (0.47)  '"'@0 (0.30)  ''t'@3 (0.13)
+  ' why'@5 -> ' why'@5 (0.37)  ' understand'@4 (0.25)  ''t'@3 (0.19)
+  ' the'@6 -> ' the'@6 (0.56)  ' why'@5 (0.35)  '"'@0 (0.06)
+  ' tests'@7 -> ' the'@6 (0.59)  ' tests'@7 (0.27)  '"'@0 (0.10)
+  ' are'@8 -> ' the'@6 (0.74)  ' are'@8 (0.16)  ' tests'@7 (0.05)
+  ' failing'@9 -> ' the'@6 (0.70)  ' failing'@9 (0.10)  ' are'@8 (0.10)
+  ',"'@10 -> ',"'@10 (0.59)  ' the'@6 (0.34)  ' are'@8 (0.02)
+  ' said'@11 -> ',"'@10 (0.80)  ' the'@6 (0.16)  ' said'@11 (0.03)
+  ' Alex'@12 -> ' the'@6 (0.40)  ',"'@10 (0.29)  ' Alex'@12 (0.17)
+  ','@13 -> ','@13 (0.37)  ' the'@6 (0.28)  ' Alex'@12 (0.10)
+  ' staring'@14 -> ','@13 (0.33)  ' the'@6 (0.28)  ' staring'@14 (0.21)
+  [remaining 58 positions: self=14%, prev=34%]
+
+--- Sample 20 [fiction] (70 tokens): 'The' ' old' ' light' 'house' ' keeper' ' climbed' ' the' ' spiral' ... ---
+  ' old'@1 -> 'The'@0 (0.79)  ' old'@1 (0.21)
+  ' light'@2 -> ' light'@2 (0.41)  'The'@0 (0.36)  ' old'@1 (0.23)
+  'house'@3 -> ' light'@2 (0.34)  'The'@0 (0.32)  'house'@3 (0.18)
+  ' keeper'@4 -> 'The'@0 (0.56)  ' light'@2 (0.25)  ' keeper'@4 (0.12)
+  ' climbed'@5 -> 'The'@0 (0.68)  ' climbed'@5 (0.23)  ' keeper'@4 (0.04)
+  ' the'@6 -> ' climbed'@5 (0.52)  ' the'@6 (0.31)  'The'@0 (0.16)
+  ' spiral'@7 -> ' the'@6 (0.45)  'The'@0 (0.42)  ' spiral'@7 (0.08)
+  ' staircase'@8 -> 'The'@0 (0.40)  ' the'@6 (0.31)  ' staircase'@8 (0.12)
+  ' for'@9 -> ' for'@9 (0.66)  ' climbed'@5 (0.15)  'The'@0 (0.10)
+  ' the'@10 -> ' for'@9 (0.80)  ' staircase'@8 (0.06)  ' the'@10 (0.06)
+  ' last'@11 -> ' for'@9 (0.86)  ' the'@10 (0.05)  'The'@0 (0.05)
+  ' time'@12 -> ' last'@11 (0.91)  ' time'@12 (0.03)  ' for'@9 (0.02)
+  ','@13 -> 'The'@0 (0.46)  ','@13 (0.35)  ' the'@6 (0.08)
+  ' his'@14 -> ','@13 (0.37)  ' his'@14 (0.23)  ' the'@10 (0.16)
+  [remaining 55 positions: self=13%, prev=25%]
+
+--- Sample 21 [fiction] (71 tokens): 'Rain' ' ham' 'mered' ' against' ' the' ' windows' ' of' ' the' ... ---
+  ' ham'@1 -> ' ham'@1 (0.56)  'Rain'@0 (0.44)
+  'mered'@2 -> 'mered'@2 (0.58)  ' ham'@1 (0.39)  'Rain'@0 (0.03)
+  ' against'@3 -> ' against'@3 (0.88)  'mered'@2 (0.12)  ' ham'@1 (0.00)
+  ' the'@4 -> ' against'@3 (0.52)  ' the'@4 (0.35)  'mered'@2 (0.12)
+  ' windows'@5 -> ' the'@4 (0.64)  ' windows'@5 (0.24)  'mered'@2 (0.07)
+  ' of'@6 -> ' of'@6 (0.45)  ' the'@4 (0.28)  ' windows'@5 (0.17)
+  ' the'@7 -> ' of'@6 (0.65)  ' the'@4 (0.15)  ' the'@7 (0.07)
+  ' detective'@8 -> ' the'@4 (0.34)  ' the'@7 (0.29)  ' detective'@8 (0.14)
+  ''s'@9 -> ''s'@9 (0.34)  ' detective'@8 (0.33)  ' the'@4 (0.20)
+  ' office'@10 -> ' the'@4 (0.50)  ' the'@7 (0.28)  ''s'@9 (0.12)
+  ' as'@11 -> ' as'@11 (0.81)  ' the'@4 (0.11)  ' the'@7 (0.03)
+  ' she'@12 -> ' as'@11 (0.78)  ' the'@4 (0.12)  ' the'@7 (0.05)
+  ' spread'@13 -> ' the'@4 (0.47)  ' the'@7 (0.28)  ' she'@12 (0.12)
+  ' the'@14 -> ' spread'@13 (0.54)  ' the'@14 (0.18)  ' the'@4 (0.16)
+  [remaining 56 positions: self=7%, prev=29%]
+
+--- Sample 22 [fiction] (80 tokens): 'The' ' spaces' 'hip' ' emerged' ' from' ' hypers' 'pace' ' into' ... ---
+  ' spaces'@1 -> 'The'@0 (0.96)  ' spaces'@1 (0.04)
+  'hip'@2 -> 'The'@0 (0.47)  ' spaces'@1 (0.28)  'hip'@2 (0.25)
+  ' emerged'@3 -> 'The'@0 (0.55)  ' emerged'@3 (0.32)  'hip'@2 (0.09)
+  ' from'@4 -> ' from'@4 (0.75)  ' emerged'@3 (0.18)  'The'@0 (0.05)
+  ' hypers'@5 -> 'The'@0 (0.49)  ' hypers'@5 (0.19)  ' from'@4 (0.14)
+  'pace'@6 -> ' hypers'@5 (0.61)  'pace'@6 (0.28)  'The'@0 (0.08)
+  ' into'@7 -> ' into'@7 (0.69)  ' hypers'@5 (0.08)  ' from'@4 (0.07)
+  ' a'@8 -> ' into'@7 (0.62)  'The'@0 (0.20)  ' emerged'@3 (0.06)
+  ' field'@9 -> 'The'@0 (0.61)  ' field'@9 (0.19)  ' into'@7 (0.13)
+  ' of'@10 -> ' field'@9 (0.93)  ' of'@10 (0.04)  'The'@0 (0.02)
+  ' debris'@11 -> ' debris'@11 (0.34)  'The'@0 (0.28)  ' of'@10 (0.21)
+  '.'@12 -> '.'@12 (0.76)  'The'@0 (0.14)  ' debris'@11 (0.08)
+  ' Captain'@13 -> '.'@12 (0.70)  'The'@0 (0.24)  ' Captain'@13 (0.03)
+  ' Torres'@14 -> '.'@12 (0.45)  'The'@0 (0.40)  ' Captain'@13 (0.07)
+  [remaining 65 positions: self=17%, prev=28%]
+
+--- Sample 23 [fiction] (82 tokens): 'She' ' found' ' the' ' letter' ' tucked' ' inside' ' a' ' book' ... ---
+  ' found'@1 -> ' found'@1 (0.88)  'She'@0 (0.12)
+  ' the'@2 -> ' the'@2 (0.80)  ' found'@1 (0.18)  'She'@0 (0.01)
+  ' letter'@3 -> ' the'@2 (0.62)  ' found'@1 (0.24)  ' letter'@3 (0.12)
+  ' tucked'@4 -> ' the'@2 (0.46)  ' tucked'@4 (0.23)  ' letter'@3 (0.16)
+  ' inside'@5 -> ' tucked'@4 (0.71)  ' inside'@5 (0.21)  ' the'@2 (0.08)
+  ' a'@6 -> ' inside'@5 (0.50)  ' the'@2 (0.40)  ' tucked'@4 (0.05)
+  ' book'@7 -> ' the'@2 (0.48)  ' book'@7 (0.25)  ' a'@6 (0.11)
+  ' she'@8 -> ' the'@2 (0.46)  ' she'@8 (0.27)  ' book'@7 (0.14)
+  ' hadn'@9 -> ' the'@2 (0.88)  ' she'@8 (0.05)  ' book'@7 (0.04)
+  ''t'@10 -> ' hadn'@9 (0.95)  ''t'@10 (0.04)  ' the'@2 (0.01)
+  ' opened'@11 -> ' the'@2 (0.46)  ' opened'@11 (0.22)  ''t'@10 (0.13)
+  ' in'@12 -> ' in'@12 (0.74)  ' opened'@11 (0.19)  ' the'@2 (0.03)
+  ' years'@13 -> ' in'@12 (0.39)  ' years'@13 (0.25)  ' hadn'@9 (0.17)
+  '.'@14 -> '.'@14 (0.86)  ' the'@2 (0.07)  ' years'@13 (0.02)
+  [remaining 67 positions: self=19%, prev=25%]
+
+--- Sample 24 [fiction] (77 tokens): 'The' ' market' ' was' ' alive' ' with' ' color' ' and' ' noise' ... ---
+  ' market'@1 -> 'The'@0 (0.96)  ' market'@1 (0.04)
+  ' was'@2 -> 'The'@0 (0.89)  ' was'@2 (0.11)  ' market'@1 (0.00)
+  ' alive'@3 -> 'The'@0 (0.47)  ' was'@2 (0.36)  ' alive'@3 (0.16)
+  ' with'@4 -> ' alive'@3 (0.85)  ' with'@4 (0.13)  'The'@0 (0.01)
+  ' color'@5 -> ' with'@4 (0.65)  'The'@0 (0.17)  ' alive'@3 (0.08)
+  ' and'@6 -> ' color'@5 (0.46)  'The'@0 (0.22)  ' with'@4 (0.18)
+  ' noise'@7 -> 'The'@0 (0.56)  ' noise'@7 (0.27)  ' and'@6 (0.07)
+  '.'@8 -> '.'@8 (0.65)  'The'@0 (0.25)  ' noise'@7 (0.06)
+  ' V'@9 -> '.'@8 (0.74)  'The'@0 (0.21)  ' V'@9 (0.03)
+  'end'@10 -> ' V'@9 (0.84)  '.'@8 (0.10)  'end'@10 (0.03)
+  'ors'@11 -> 'end'@10 (0.60)  '.'@8 (0.24)  'ors'@11 (0.07)
+  ' called'@12 -> '.'@8 (0.68)  ' called'@12 (0.24)  'The'@0 (0.05)
+  ' out'@13 -> ' called'@12 (0.88)  ' out'@13 (0.07)  '.'@8 (0.04)
+  ' prices'@14 -> '.'@8 (0.66)  'The'@0 (0.18)  ' prices'@14 (0.12)
+  [remaining 62 positions: self=8%, prev=26%]
+
+--- Sample 25 [repetitive] (56 tokens): 'The' ' cat' ' sat' ' on' ' the' ' mat' '.' ' The' ... ---
+  ' cat'@1 -> 'The'@0 (0.84)  ' cat'@1 (0.16)
+  ' sat'@2 -> 'The'@0 (0.60)  ' cat'@1 (0.21)  ' sat'@2 (0.19)
+  ' on'@3 -> ' on'@3 (0.80)  'The'@0 (0.12)  ' sat'@2 (0.08)
+  ' the'@4 -> ' on'@3 (0.90)  'The'@0 (0.05)  ' the'@4 (0.05)
+  ' mat'@5 -> 'The'@0 (0.45)  ' the'@4 (0.42)  ' mat'@5 (0.10)
+  '.'@6 -> '.'@6 (0.65)  'The'@0 (0.18)  ' the'@4 (0.11)
+  ' The'@7 -> '.'@6 (0.41)  'The'@0 (0.23)  ' The'@7 (0.22)
+  ' dog'@8 -> '.'@6 (0.50)  'The'@0 (0.19)  ' The'@7 (0.16)
+  ' sat'@9 -> '.'@6 (0.48)  ' The'@7 (0.18)  'The'@0 (0.15)
+  ' on'@10 -> '.'@6 (0.44)  ' on'@10 (0.31)  ' The'@7 (0.11)
+  ' the'@11 -> ' on'@10 (0.84)  '.'@6 (0.07)  ' the'@11 (0.03)
+  ' log'@12 -> '.'@6 (0.58)  ' the'@11 (0.15)  ' the'@4 (0.13)
+  '.'@13 -> '.'@13 (0.37)  '.'@6 (0.30)  ' The'@7 (0.15)
+  ' The'@14 -> '.'@6 (0.31)  '.'@13 (0.23)  ' The'@14 (0.15)
+  [remaining 41 positions: self=22%, prev=17%]
+
+--- Sample 26 [repetitive] (71 tokens): 'Step' ' 1' ':' ' Pre' 'heat' ' the' ' oven' ' to' ... ---
+  ' 1'@1 -> 'Step'@0 (0.78)  ' 1'@1 (0.22)
+  ':'@2 -> ' 1'@1 (0.86)  ':'@2 (0.14)  'Step'@0 (0.00)
+  ' Pre'@3 -> ':'@2 (0.74)  ' Pre'@3 (0.13)  ' 1'@1 (0.12)
+  'heat'@4 -> ' Pre'@3 (0.50)  ':'@2 (0.29)  'heat'@4 (0.20)
+  ' the'@5 -> ' the'@5 (0.36)  ':'@2 (0.33)  'heat'@4 (0.25)
+  ' oven'@6 -> ' the'@5 (0.32)  ' oven'@6 (0.29)  'heat'@4 (0.21)
+  ' to'@7 -> ' oven'@6 (0.60)  ' to'@7 (0.22)  'heat'@4 (0.14)
+  ' 350'@8 -> ' to'@7 (0.58)  ' 350'@8 (0.21)  ' the'@5 (0.11)
+  ' degrees'@9 -> ' 350'@8 (0.92)  ' to'@7 (0.05)  ' degrees'@9 (0.02)
+  '.'@10 -> '.'@10 (0.79)  ' the'@5 (0.08)  ':'@2 (0.07)
+  ' Step'@11 -> '.'@10 (0.65)  ' the'@5 (0.14)  ' Step'@11 (0.12)
+  ' 2'@12 -> '.'@10 (0.55)  ' Step'@11 (0.24)  ' the'@5 (0.14)
+  ':'@13 -> ' 2'@12 (0.55)  '.'@10 (0.30)  ':'@13 (0.08)
+  ' Mix'@14 -> '.'@10 (0.67)  ' the'@5 (0.11)  ':'@13 (0.07)
+  [remaining 56 positions: self=21%, prev=29%]
+
+--- Sample 27 [repetitive] (63 tokens): 'Monday' ' is' ' the' ' first' ' day' ' of' ' the' ' week' ... ---
+  ' is'@1 -> ' is'@1 (0.87)  'Monday'@0 (0.13)
+  ' the'@2 -> ' is'@1 (0.59)  ' the'@2 (0.23)  'Monday'@0 (0.19)
+  ' first'@3 -> ' the'@2 (0.80)  ' is'@1 (0.10)  ' first'@3 (0.07)
+  ' day'@4 -> ' first'@3 (0.87)  ' the'@2 (0.09)  ' day'@4 (0.04)
+  ' of'@5 -> ' of'@5 (0.62)  ' day'@4 (0.19)  ' the'@2 (0.18)
+  ' the'@6 -> ' of'@5 (0.89)  ' the'@6 (0.06)  ' the'@2 (0.04)
+  ' week'@7 -> ' of'@5 (0.52)  ' the'@6 (0.22)  ' the'@2 (0.20)
+  '.'@8 -> '.'@8 (0.78)  ' the'@2 (0.10)  ' the'@6 (0.07)
+  ' Tuesday'@9 -> '.'@8 (0.54)  ' the'@2 (0.18)  ' the'@6 (0.15)
+  ' is'@10 -> '.'@8 (0.54)  ' is'@10 (0.22)  ' the'@2 (0.16)
+  ' the'@11 -> ' is'@10 (0.41)  '.'@8 (0.21)  ' Tuesday'@9 (0.13)
+  ' second'@12 -> '.'@8 (0.43)  ' the'@11 (0.20)  ' the'@2 (0.17)
+  ' day'@13 -> ' second'@12 (0.48)  '.'@8 (0.19)  ' the'@11 (0.12)
+  ' of'@14 -> ' of'@14 (0.34)  '.'@8 (0.20)  ' day'@13 (0.14)
+  [remaining 48 positions: self=23%, prev=42%]
+
+--- Sample 28 [repetitive] (54 tokens): 'Al' 'ice' ' went' ' to' ' the' ' store' '.' ' Bob' ... ---
+  'ice'@1 -> 'Al'@0 (0.55)  'ice'@1 (0.45)
+  ' went'@2 -> ' went'@2 (0.82)  'ice'@1 (0.12)  'Al'@0 (0.06)
+  ' to'@3 -> ' went'@2 (0.77)  ' to'@3 (0.23)  'ice'@1 (0.00)
+  ' the'@4 -> ' to'@3 (0.80)  ' the'@4 (0.12)  ' went'@2 (0.08)
+  ' store'@5 -> ' the'@4 (0.49)  ' to'@3 (0.34)  ' store'@5 (0.15)
+  '.'@6 -> '.'@6 (0.84)  ' the'@4 (0.10)  ' store'@5 (0.06)
+  ' Bob'@7 -> '.'@6 (0.69)  ' the'@4 (0.22)  ' store'@5 (0.04)
+  ' went'@8 -> '.'@6 (0.73)  ' the'@4 (0.21)  ' went'@8 (0.02)
+  ' to'@9 -> ' went'@8 (0.83)  ' to'@9 (0.13)  '.'@6 (0.02)
+  ' the'@10 -> ' to'@9 (0.64)  '.'@6 (0.13)  ' the'@4 (0.07)
+  ' park'@11 -> '.'@6 (0.49)  ' the'@4 (0.17)  ' the'@10 (0.16)
+  '.'@12 -> '.'@12 (0.49)  '.'@6 (0.39)  ' the'@10 (0.05)
+  ' Alice'@13 -> '.'@6 (0.43)  '.'@12 (0.30)  ' the'@4 (0.14)
+  ' bought'@14 -> '.'@6 (0.45)  '.'@12 (0.31)  ' the'@4 (0.11)
+  [remaining 39 positions: self=21%, prev=21%]
+
+--- Sample 29 [repetitive] (53 tokens): 'The' ' quick' ' brown' ' fox' ' jumps' ' over' ' the' ' lazy' ... ---
+  ' quick'@1 -> 'The'@0 (0.59)  ' quick'@1 (0.41)
+  ' brown'@2 -> 'The'@0 (0.76)  ' quick'@1 (0.15)  ' brown'@2 (0.09)
+  ' fox'@3 -> ' fox'@3 (0.54)  ' brown'@2 (0.20)  'The'@0 (0.20)
+  ' jumps'@4 -> ' fox'@3 (0.69)  'The'@0 (0.17)  ' jumps'@4 (0.10)
+  ' over'@5 -> ' over'@5 (0.52)  ' jumps'@4 (0.31)  'The'@0 (0.10)
+  ' the'@6 -> ' over'@5 (0.82)  ' jumps'@4 (0.06)  ' the'@6 (0.05)
+  ' lazy'@7 -> 'The'@0 (0.48)  ' the'@6 (0.33)  ' over'@5 (0.07)
+  ' dog'@8 -> 'The'@0 (0.49)  ' the'@6 (0.35)  ' lazy'@7 (0.05)
+  '.'@9 -> '.'@9 (0.75)  'The'@0 (0.18)  ' the'@6 (0.05)
+  ' A'@10 -> '.'@9 (0.82)  'The'@0 (0.08)  ' the'@6 (0.07)
+  ' quick'@11 -> '.'@9 (0.67)  ' the'@6 (0.11)  ' A'@10 (0.09)
+  ' brown'@12 -> '.'@9 (0.81)  ' the'@6 (0.10)  'The'@0 (0.05)
+  ' fox'@13 -> '.'@9 (0.50)  ' fox'@13 (0.16)  ' brown'@12 (0.12)
+  ' jumped'@14 -> '.'@9 (0.76)  'The'@0 (0.09)  ' the'@6 (0.08)
+  [remaining 38 positions: self=11%, prev=11%]
