@@ -44,10 +44,48 @@ INV_FREQ = 1.0 / (ROPE_BASE ** (torch.arange(0, ROTARY_DIM, 2).float() / ROTARY_
 torch.manual_seed(42)
 FULL_BASIS = torch.linalg.qr(torch.randn(D_MODEL, D_MODEL))[0]  # [512, 512] orthogonal
 
+# --- Trained subspace storage ---
+# When extract_trained_subspaces() is called, these get populated with the real
+# V/O matrices from the trained model. get_subspace() then returns trained directions.
+TRAINED_V = {}  # (layer, head) -> W_V [64, 512]
+TRAINED_O = {}  # (layer, head) -> W_O [512, 64]
+USE_TRAINED_SUBSPACES = False
 
-def get_subspace(head_idx):
-    """Get the orthogonal basis vectors for a head's 64-dim subspace."""
-    return FULL_BASIS[:, head_idx * HEAD_DIM:(head_idx + 1) * HEAD_DIM]  # [512, 64]
+
+def extract_trained_subspaces(trained_model):
+    """Extract V and O weight matrices from a trained Pythia-70M model.
+
+    After calling this, get_subspace() returns the trained O matrix (write subspace)
+    for each head, and get_v_subspace() returns the trained V matrix (read subspace).
+    """
+    global USE_TRAINED_SUBSPACES
+    TRAINED_V.clear()
+    TRAINED_O.clear()
+    for layer_idx in range(N_LAYERS):
+        qkv = trained_model.gpt_neox.layers[layer_idx].attention.query_key_value.weight.data.float()
+        dense = trained_model.gpt_neox.layers[layer_idx].attention.dense.weight.data.float()
+        for head_idx in range(N_HEADS):
+            base = head_idx * 3 * HEAD_DIM
+            TRAINED_V[(layer_idx, head_idx)] = qkv[base + 2 * HEAD_DIM:base + 3 * HEAD_DIM, :]
+            TRAINED_O[(layer_idx, head_idx)] = dense[:, head_idx * HEAD_DIM:(head_idx + 1) * HEAD_DIM]
+    USE_TRAINED_SUBSPACES = True
+    print(f"  Extracted trained V/O for {len(TRAINED_V)} heads")
+
+
+def get_subspace(head_idx, layer_idx=None):
+    """Get the subspace basis for a head.
+
+    If trained subspaces are loaded, returns the trained O matrix (write directions).
+    Otherwise returns the arbitrary orthogonal basis.
+    """
+    if USE_TRAINED_SUBSPACES and layer_idx is not None:
+        return TRAINED_O[(layer_idx, head_idx)]  # [512, 64]
+    return FULL_BASIS[:, head_idx * HEAD_DIM:(head_idx + 1) * HEAD_DIM]
+
+
+def get_trained_vo(layer_idx, head_idx):
+    """Get the trained V and O matrices directly."""
+    return TRAINED_V[(layer_idx, head_idx)], TRAINED_O[(layer_idx, head_idx)]
 
 
 def set_qkv_for_head(qkv_weight, qkv_bias, layer, head, W_Q, W_K, W_V,
@@ -82,7 +120,7 @@ def set_output_for_head(dense_weight, dense_bias, head, W_O):
 # Circuit 1: Previous-Token Head
 # ============================================================
 
-def make_prev_token_head(head_subspace, alpha=10.0):
+def make_prev_token_head(head_subspace, alpha=10.0, trained_vo=None):
     """Construct Q, K, V, O matrices for a previous-token head.
 
     Key insight: Use QKV BIAS (not weights) for the rotary dims so the
@@ -121,13 +159,15 @@ def make_prev_token_head(head_subspace, alpha=10.0):
         b_K[j] = alpha * math.cos(theta_j)           # real
         b_K[HALF_ROT + j] = alpha * math.sin(theta_j)  # imaginary
 
-    # V: project from residual stream into head space (for OV copying)
-    # O: project back to residual stream
-    # OV = O @ V writes a copy of the attended token's representation
-    # Large scale so the prev-token signal dominates the induction heads' K projection
-    v_scale = 2.0
-    W_V = v_scale * P.T  # [64, 512]
-    W_O = v_scale * P    # [512, 64]
+    # V and O: use trained matrices if available, otherwise construct identity-like OV
+    if trained_vo is not None:
+        W_V, W_O = trained_vo
+        W_V = W_V.clone()
+        W_O = W_O.clone()
+    else:
+        v_scale = 2.0
+        W_V = v_scale * P.T  # [64, 512]
+        W_O = v_scale * P    # [512, 64]
     b_V = torch.zeros(HEAD_DIM)
 
     return W_Q, W_K, W_V, W_O, b_Q, b_K, b_V
@@ -137,7 +177,8 @@ def make_prev_token_head(head_subspace, alpha=10.0):
 # Circuit 2: Induction Head (K-composition)
 # ============================================================
 
-def make_induction_head(own_subspace, prev_token_subspace, alpha=4.0, content_alpha=2.0):
+def make_induction_head(own_subspace, prev_token_subspace, alpha=4.0, content_alpha=2.0,
+                        trained_vo=None):
     """Construct an induction head that composes with a previous-token head.
 
     The induction pattern [A][B]...[A] -> predict B requires:
@@ -182,10 +223,15 @@ def make_induction_head(own_subspace, prev_token_subspace, alpha=4.0, content_al
         W_Q[HALF_ROT + j, :] = 0    # imaginary part
         W_K[HALF_ROT + j, :] = 0
 
-    # V and O: copy attended token's content toward output
-    v_scale = 0.3
-    W_V = v_scale * P_own.T  # [64, 512]
-    W_O = v_scale * P_own    # [512, 64]
+    # V and O: use trained matrices if available
+    if trained_vo is not None:
+        W_V, W_O = trained_vo
+        W_V = W_V.clone()
+        W_O = W_O.clone()
+    else:
+        v_scale = 0.3
+        W_V = v_scale * P_own.T
+        W_O = v_scale * P_own
 
     return W_Q, W_K, W_V, W_O, None, None, None
 
@@ -194,7 +240,8 @@ def make_induction_head(own_subspace, prev_token_subspace, alpha=4.0, content_al
 # Circuit 3: Copy Head (high OV identity)
 # ============================================================
 
-def make_copy_head(head_subspace, ov_strength=0.8, qk_content_strength=1.5):
+def make_copy_head(head_subspace, ov_strength=0.8, qk_content_strength=1.5,
+                   trained_vo=None):
     """Construct a copy head with strong OV identity circuit.
 
     OV circuit ≈ scaled identity: when attending to a token, boost that token's
@@ -225,11 +272,16 @@ def make_copy_head(head_subspace, ov_strength=0.8, qk_content_strength=1.5):
         W_Q[j, :] = 0.5 * u
         W_K[j, :] = 0.5 * u
 
-    # OV: near-identity (copy circuit) with exponential SV decay
-    sigmas = torch.exp(-0.04 * torch.arange(HEAD_DIM).float())
-    sigmas *= ov_strength
-    W_V = (P * sigmas.unsqueeze(0)).T  # [64, 512]
-    W_O = P * sigmas.unsqueeze(0)      # [512, 64]
+    # OV: use trained matrices if available, otherwise construct identity-like
+    if trained_vo is not None:
+        W_V, W_O = trained_vo
+        W_V = W_V.clone()
+        W_O = W_O.clone()
+    else:
+        sigmas = torch.exp(-0.04 * torch.arange(HEAD_DIM).float())
+        sigmas *= ov_strength
+        W_V = (P * sigmas.unsqueeze(0)).T
+        W_O = P * sigmas.unsqueeze(0)
 
     return W_Q, W_K, W_V, W_O, None, None, None
 
@@ -238,7 +290,8 @@ def make_copy_head(head_subspace, ov_strength=0.8, qk_content_strength=1.5):
 # Circuit 4: Suppression Head (negative OV)
 # ============================================================
 
-def make_suppression_head(head_subspace, ov_strength=-0.4, qk_entropy="high"):
+def make_suppression_head(head_subspace, ov_strength=-0.4, qk_entropy="high",
+                          trained_vo=None):
     """Construct a suppression head with negative OV identity.
 
     These heads attend broadly (high entropy) and write negative contributions,
@@ -256,11 +309,16 @@ def make_suppression_head(head_subspace, ov_strength=-0.4, qk_entropy="high"):
         W_Q[dim_idx, :] = qk_scale * P[:, d]
         W_K[dim_idx, :] = qk_scale * P[:, d]
 
-    # OV: negative identity (suppression)
-    sigmas = torch.exp(-0.04 * torch.arange(HEAD_DIM).float())
-    sigmas *= ov_strength  # negative!
-    W_V = (P * sigmas.unsqueeze(0)).T
-    W_O = P * sigmas.unsqueeze(0)
+    # OV: use trained if available, otherwise negative identity
+    if trained_vo is not None:
+        W_V, W_O = trained_vo
+        W_V = W_V.clone()
+        W_O = W_O.clone()
+    else:
+        sigmas = torch.exp(-0.04 * torch.arange(HEAD_DIM).float())
+        sigmas *= ov_strength
+        W_V = (P * sigmas.unsqueeze(0)).T
+        W_O = P * sigmas.unsqueeze(0)
 
     return W_Q, W_K, W_V, W_O, None, None, None
 
@@ -269,7 +327,7 @@ def make_suppression_head(head_subspace, ov_strength=-0.4, qk_entropy="high"):
 # Circuit 5: Generic content head (default for unassigned heads)
 # ============================================================
 
-def make_content_head(head_subspace, scale=0.5):
+def make_content_head(head_subspace, scale=0.5, trained_vo=None):
     """Default content-based head with moderate identity QK and weak OV."""
     P = head_subspace
 
@@ -288,10 +346,15 @@ def make_content_head(head_subspace, scale=0.5):
         W_Q[j, :] = 0.2 * u
         W_K[j, :] = 0.2 * u
 
-    # Weak OV (let training determine)
-    ov_scale = 0.1
-    W_V = ov_scale * P.T
-    W_O = ov_scale * P
+    # OV: use trained if available, otherwise weak default
+    if trained_vo is not None:
+        W_V, W_O = trained_vo
+        W_V = W_V.clone()
+        W_O = W_O.clone()
+    else:
+        ov_scale = 0.1
+        W_V = ov_scale * P.T
+        W_O = ov_scale * P
 
     return W_Q, W_K, W_V, W_O, None, None, None
 
@@ -430,7 +493,7 @@ def populate_model(model):
     XSA_HEADS.clear()
 
     # Get the subspace for the previous-token head (L2_H1) -- induction heads need this
-    prev_token_subspace = get_subspace(1)  # head 1's subspace
+    prev_token_subspace = get_subspace(1, layer_idx=2)
 
     for layer_idx in range(N_LAYERS):
         layer = model.gpt_neox.layers[layer_idx]
@@ -441,24 +504,32 @@ def populate_model(model):
 
         for head_idx in range(N_HEADS):
             circuit = CIRCUIT_PLAN[(layer_idx, head_idx)]
-            subspace = get_subspace(head_idx)
+            subspace = get_subspace(head_idx, layer_idx=layer_idx)
+
+            # Get trained V/O if available
+            tvo = None
+            if USE_TRAINED_SUBSPACES:
+                tvo = get_trained_vo(layer_idx, head_idx)
 
             if circuit == "prev_token":
-                W_Q, W_K, W_V, W_O, b_Q, b_K, b_V = make_prev_token_head(subspace, alpha=10.0)
+                W_Q, W_K, W_V, W_O, b_Q, b_K, b_V = make_prev_token_head(
+                    subspace, alpha=10.0, trained_vo=tvo)
                 XSA_HEADS.add((layer_idx, head_idx))
             elif circuit == "induction":
                 XSA_HEADS.add((layer_idx, head_idx))
                 W_Q, W_K, W_V, W_O, b_Q, b_K, b_V = make_induction_head(
-                    subspace, prev_token_subspace, alpha=4.0, content_alpha=2.0
-                )
+                    subspace, prev_token_subspace, alpha=4.0, content_alpha=2.0,
+                    trained_vo=tvo)
             elif circuit == "copy":
                 W_Q, W_K, W_V, W_O, b_Q, b_K, b_V = make_copy_head(
-                    subspace, ov_strength=0.8, qk_content_strength=1.5
-                )
+                    subspace, ov_strength=0.8, qk_content_strength=1.5,
+                    trained_vo=tvo)
             elif circuit == "suppress":
-                W_Q, W_K, W_V, W_O, b_Q, b_K, b_V = make_suppression_head(subspace, ov_strength=-0.4)
+                W_Q, W_K, W_V, W_O, b_Q, b_K, b_V = make_suppression_head(
+                    subspace, ov_strength=-0.4, trained_vo=tvo)
             else:  # content
-                W_Q, W_K, W_V, W_O, b_Q, b_K, b_V = make_content_head(subspace, scale=0.5)
+                W_Q, W_K, W_V, W_O, b_Q, b_K, b_V = make_content_head(
+                    subspace, scale=0.5, trained_vo=tvo)
 
             set_qkv_for_head(qkv_w, qkv_b, layer_idx, head_idx, W_Q, W_K, W_V,
                              b_Q, b_K, b_V)

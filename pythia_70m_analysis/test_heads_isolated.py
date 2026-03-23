@@ -21,6 +21,7 @@ from engineer_weights import (
     get_subspace, make_prev_token_head, make_induction_head, make_copy_head,
     make_suppression_head, make_content_head,
     set_qkv_for_head, set_output_for_head,
+    extract_trained_subspaces, USE_TRAINED_SUBSPACES, get_trained_vo,
 )
 
 OUT_DIR = Path(__file__).parent / "summary"
@@ -136,19 +137,26 @@ def compute_attention_stats(model_full, model_patched, tokenizer, texts,
 def make_engineered_head(layer_idx, head_idx):
     """Create engineered weights for a specific head."""
     circuit = CIRCUIT_PLAN[(layer_idx, head_idx)]
-    subspace = get_subspace(head_idx)
-    prev_token_subspace = get_subspace(1)
+    subspace = get_subspace(head_idx, layer_idx=layer_idx)
+    prev_token_subspace = get_subspace(1, layer_idx=2)
+
+    # Get trained V/O if available
+    tvo = None
+    if USE_TRAINED_SUBSPACES:
+        tvo = get_trained_vo(layer_idx, head_idx)
 
     if circuit == "prev_token":
-        return make_prev_token_head(subspace, alpha=10.0)
+        return make_prev_token_head(subspace, alpha=10.0, trained_vo=tvo)
     elif circuit == "induction":
-        return make_induction_head(subspace, prev_token_subspace, alpha=4.0, content_alpha=2.0)
+        return make_induction_head(subspace, prev_token_subspace, alpha=4.0,
+                                   content_alpha=2.0, trained_vo=tvo)
     elif circuit == "copy":
-        return make_copy_head(subspace, ov_strength=0.8, qk_content_strength=1.5)
+        return make_copy_head(subspace, ov_strength=0.8, qk_content_strength=1.5,
+                              trained_vo=tvo)
     elif circuit == "suppress":
-        return make_suppression_head(subspace, ov_strength=-0.4)
+        return make_suppression_head(subspace, ov_strength=-0.4, trained_vo=tvo)
     else:
-        return make_content_head(subspace, scale=0.5)
+        return make_content_head(subspace, scale=0.5, trained_vo=tvo)
 
 
 def test_single_head(model_full, tokenizer, eval_texts, layer_idx, head_idx, baseline_loss):
@@ -284,6 +292,10 @@ def main():
     print("Computing baseline loss...")
     baseline_loss = compute_loss(model_full, tokenizer, eval_texts)
     print(f"  Baseline: {baseline_loss:.4f} nats ({baseline_loss / math.log(2):.4f} bpb)")
+
+    # Extract trained V/O subspaces so engineered heads use the right directions
+    print("Extracting trained V/O subspaces...")
+    extract_trained_subspaces(model_full)
 
     # Populate XSA_HEADS set
     XSA_HEADS.clear()
