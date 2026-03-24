@@ -292,6 +292,10 @@ def eval_val(
 
         total_batches = (seq_end - seq_start + local_batch_seqs - 1) // local_batch_seqs
         eval_t0 = time.perf_counter()
+        if log_fn is not None:
+            log_fn(f"eval_start: total_seqs={seq_end-seq_start} local_batch_seqs={local_batch_seqs} "
+                   f"total_batches={total_batches} L={L} lookahead={lookahead} "
+                   f"recurse_eval={args.recurse_eval} H={H}")
 
         for batch_idx, batch_seq_start in enumerate(range(seq_start, seq_end, local_batch_seqs)):
             batch_seq_end = min(batch_seq_start + local_batch_seqs, seq_end)
@@ -302,10 +306,22 @@ def eval_val(
             full_y = local[1:].reshape(-1, L)   # (B, L)
             B = full_x.shape[0]
 
+            if log_fn is not None:
+                mem_alloc = torch.cuda.memory_allocated() // 1024 // 1024
+                mem_res = torch.cuda.memory_reserved() // 1024 // 1024
+                log_fn(f"eval_batch_start: batch={batch_idx+1}/{total_batches} B={B} "
+                       f"gpu_mem={mem_alloc}MiB_alloc/{mem_res}MiB_reserved")
+
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                 base_embeds = m.tok_emb(full_x)  # (B, L, H)
                 mask_emb = m.tok_emb.weight[mask_token_id]
                 avg_embed = m.tok_emb.weight.mean(dim=0)
+
+                if log_fn is not None and batch_idx == 0:
+                    mem_alloc = torch.cuda.memory_allocated() // 1024 // 1024
+                    log_fn(f"eval_after_embed: gpu_mem={mem_alloc}MiB "
+                           f"base_embeds={list(base_embeds.shape)} "
+                           f"dtype={base_embeds.dtype}")
 
                 # Initialize: mask from position 0 onwards (first position scored)
                 mask_end = min(lookahead, L)
@@ -324,33 +340,39 @@ def eval_val(
                     h_flat = h.reshape(-1, H)
                     del h
 
-                    # Extract score for one position BEFORE computing full logits
                     scored = None
                     if score_pos is not None:
-                        pos_h = h_flat.reshape(B, L, H)[:, score_pos, :]  # (B, H)
-                        pos_logits = m._compute_logits(pos_h)  # (B, V)
+                        pos_h = h_flat.reshape(B, L, H)[:, score_pos, :]
+                        pos_logits = m._compute_logits(pos_h)
                         scored = pos_logits
 
-                    # Update soft embeddings at masked positions only
-                    # Compute logits ONLY for masked positions (not full B*L)
                     if mask_pos.any():
-                        masked_h = h_flat.reshape(B, L, H)[mask_pos]  # (num_masked, H)
-                        masked_logits = m._compute_logits(masked_h)  # (num_masked, V)
+                        masked_h = h_flat.reshape(B, L, H)[mask_pos]
+                        masked_logits = m._compute_logits(masked_h)
                         weights = F.softmax(masked_logits / args.recurse_temp, dim=-1)
-                        soft_emb = weights @ m.tok_emb.weight + mask_emb  # (num_masked, H)
-                        del masked_logits, weights  # free V-dim tensors immediately
+                        soft_emb = weights @ m.tok_emb.weight + mask_emb
+                        del masked_logits, weights, masked_h
                         new_soft = base_embeds.clone()
                         new_soft[mask_pos] = soft_emb
+                        del h_flat
                         return new_soft, scored
+                    del h_flat
                     return soft_embeds, scored
 
                 # Warm up: N recursive passes on the initial masked sequence
-                for _ in range(args.recurse_eval):
+                if log_fn is not None and batch_idx == 0:
+                    log_fn(f"eval_warmup_start: recurse_eval={args.recurse_eval}")
+                for warmup_i in range(args.recurse_eval):
                     soft_embeds, _ = _forward_and_update_soft(soft_embeds, mask_pos)
+                    if log_fn is not None and batch_idx == 0:
+                        mem_alloc = torch.cuda.memory_allocated() // 1024 // 1024
+                        log_fn(f"eval_warmup: step={warmup_i+1}/{args.recurse_eval} gpu_mem={mem_alloc}MiB")
+
+                if log_fn is not None and batch_idx == 0:
+                    log_fn(f"eval_scoring_start: L={L} positions to score")
 
                 # Score each position by shifting right
                 for i in range(L):
-                    # Forward: update soft embeds + score position i
                     soft_embeds, scored_logits = _forward_and_update_soft(
                         soft_embeds, mask_pos, score_pos=i
                     )
@@ -361,17 +383,20 @@ def eval_val(
                     val_loss_sum += pos_loss.to(torch.float64)
                     val_token_count += float(B)
 
-                    # BPB byte counting
                     prev_ids = full_x[:, i]
                     tgt_ids = scored_targets
                     token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
                     token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
                     val_byte_count += token_bytes.to(torch.float64).sum()
 
+                    # Log every 128 positions on first batch
+                    if log_fn is not None and batch_idx == 0 and (i + 1) % 128 == 0:
+                        mem_alloc = torch.cuda.memory_allocated() // 1024 // 1024
+                        log_fn(f"eval_pos: {i+1}/{L} gpu_mem={mem_alloc}MiB")
+
                     if i == L - 1:
                         break
 
-                    # Shift right: position i becomes ground truth, extend mask
                     mask_pos[:, i] = False
                     new_mask_end = min(i + 1 + lookahead, L)
                     if new_mask_end > i + lookahead:
@@ -381,10 +406,9 @@ def eval_val(
             if log_fn is not None:
                 elapsed = time.perf_counter() - eval_t0
                 running_loss = (val_loss_sum / max(val_token_count, 1)).item()
-                log_fn(f"eval_progress: batch {batch_idx+1}/{total_batches} "
+                log_fn(f"eval_batch_done: batch={batch_idx+1}/{total_batches} "
                        f"seqs={batch_seq_end-seq_start}/{seq_end-seq_start} "
-                       f"running_loss={running_loss:.4f} "
-                       f"elapsed={elapsed:.1f}s")
+                       f"running_loss={running_loss:.4f} elapsed={elapsed:.1f}s")
 
     if dist.is_available() and dist.is_initialized():
         dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
