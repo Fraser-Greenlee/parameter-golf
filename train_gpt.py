@@ -272,6 +272,8 @@ def eval_val(
     L = args.train_seq_len
     H = args.model_dim
     model.eval()
+    # Unwrap DDP to access model internals for streaming eval
+    m = model.module if hasattr(model, "module") else model
     with torch.inference_mode():
         # MDLM streaming eval: stride=1, score left-most masked position only.
         # Amortized recursion: N passes to warm up, then 1 pass per shift.
@@ -296,9 +298,9 @@ def eval_val(
             B = full_x.shape[0]
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                base_embeds = model.tok_emb(full_x)  # (B, L, H)
-                mask_emb = model.tok_emb.weight[mask_token_id]
-                avg_embed = model.tok_emb.weight.mean(dim=0)
+                base_embeds = m.tok_emb(full_x)  # (B, L, H)
+                mask_emb = m.tok_emb.weight[mask_token_id]
+                avg_embed = m.tok_emb.weight.mean(dim=0)
 
                 # Initialize: mask from position 0 onwards (first position scored)
                 mask_end = min(lookahead, L)
@@ -311,22 +313,22 @@ def eval_val(
                 for _ in range(args.recurse_eval):
                     inputs_embeds = torch.where(mask_pos.unsqueeze(-1), soft_embeds, base_embeds)
                     x = F.rms_norm(inputs_embeds, (H,))
-                    h = model.forward_body(x, attn_mode="bidirectional")
-                    logits = model._compute_logits(h.reshape(-1, H)).reshape(B, L, -1)
-                    # Update soft embeddings at masked positions
+                    h = m.forward_body(x, attn_mode="bidirectional")
+                    logits = m._compute_logits(h.reshape(-1, H)).reshape(B, L, -1)
+                    # Update soft embeddings — keep only soft embeds, discard logits
                     if mask_pos.any():
                         masked_logits = logits[mask_pos]
                         weights = F.softmax(masked_logits / args.recurse_temp, dim=-1)
-                        soft_emb = weights @ model.tok_emb.weight + mask_emb
+                        soft_emb = weights @ m.tok_emb.weight + mask_emb
                         soft_embeds = base_embeds.clone()
                         soft_embeds[mask_pos] = soft_emb
 
                 # Score each position by shifting right
                 for i in range(L):
-                    # Score position i (the left-most masked)
-                    scored_logits = logits[:, i, :]
+                    # Score position i — extract only position i's logit to save memory
+                    scored_logits = logits[:, i, :]  # (B, V)
                     scored_targets = full_y[:, i]
-                    pos_loss = F.cross_entropy(scored_logits.float(), scored_targets, reduction="sum").detach()
+                    pos_loss = F.cross_entropy(scored_logits.float(), scored_targets, reduction="sum")
                     val_loss_sum += pos_loss.to(torch.float64)
                     val_token_count += float(B)
 
@@ -338,27 +340,28 @@ def eval_val(
                     val_byte_count += token_bytes.to(torch.float64).sum()
 
                     if i == L - 1:
-                        break  # last position, no more shifting
+                        break
 
-                    # Shift right: position i becomes ground truth, extend mask on right
-                    mask_pos[:, i] = False  # unmasked (now ground truth)
+                    # Shift right: position i becomes ground truth, extend mask
+                    mask_pos[:, i] = False
                     new_mask_end = min(i + 1 + lookahead, L)
                     if new_mask_end > i + lookahead:
-                        mask_pos[:, new_mask_end - 1] = True  # new rightmost mask
+                        mask_pos[:, new_mask_end - 1] = True
                         soft_embeds[:, new_mask_end - 1, :] = avg_embed + mask_emb
 
-                    # 1 incremental forward pass (soft embeddings already warm)
+                    # 1 incremental forward pass — compute logits but keep soft embeds compact
                     inputs_embeds = torch.where(mask_pos.unsqueeze(-1), soft_embeds, base_embeds)
                     x = F.rms_norm(inputs_embeds, (H,))
-                    h = model.forward_body(x, attn_mode="bidirectional")
-                    logits = model._compute_logits(h.reshape(-1, H)).reshape(B, L, -1)
-                    # Refresh soft embeddings at remaining masked positions
+                    h = m.forward_body(x, attn_mode="bidirectional")
+                    logits = m._compute_logits(h.reshape(-1, H)).reshape(B, L, -1)
+                    # Refresh soft embeddings
                     if mask_pos.any():
                         masked_logits = logits[mask_pos]
                         weights = F.softmax(masked_logits / args.recurse_temp, dim=-1)
-                        soft_emb = weights @ model.tok_emb.weight + mask_emb
+                        soft_emb = weights @ m.tok_emb.weight + mask_emb
                         soft_embeds = base_embeds.clone()
                         soft_embeds[mask_pos] = soft_emb
+                    del h  # free hidden states
 
     if dist.is_available() and dist.is_initialized():
         dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
