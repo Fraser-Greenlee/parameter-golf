@@ -107,8 +107,11 @@ SHARED_DEFAULTS = {
 }
 
 
-def run_config(name: str, overrides: dict, nproc: int, dry_run: bool, out_dir: Path):
+def run_config(name: str, overrides: dict, nproc: int, dry_run: bool, out_dir: Path,
+               wandb_project: str = ""):
     env = {**os.environ, **SHARED_DEFAULTS, **overrides, "RUN_ID": name}
+    if wandb_project:
+        env["WANDB_PROJECT"] = wandb_project
     log_file = out_dir / f"{name}.log"
 
     cmd = [
@@ -153,6 +156,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Print commands only")
     parser.add_argument("--nproc", type=int, default=8, help="GPUs per run")
     parser.add_argument("--out-dir", type=str, default="sweep_results", help="Output directory")
+    parser.add_argument("--wandb-project", type=str, default="", help="W&B project (empty=disabled)")
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -165,7 +169,7 @@ def main():
         if name not in CONFIGS:
             print(f"WARNING: Unknown config '{name}', skipping")
             continue
-        run_config(name, CONFIGS[name], args.nproc, args.dry_run, out_dir)
+        run_config(name, CONFIGS[name], args.nproc, args.dry_run, out_dir, args.wandb_project)
 
     print(f"\nAll done. Results in {out_dir}/")
 

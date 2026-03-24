@@ -88,6 +88,10 @@ class Hyperparameters:
     mdlm_loss_weight = os.environ.get("MDLM_LOSS_WEIGHT", "scheduler")  # "scheduler" or "uniform"
     eval_lookahead = int(os.environ.get("EVAL_LOOKAHEAD", 128))  # masked future positions during eval
 
+    # W&B logging (opt-in: set WANDB_PROJECT to enable)
+    wandb_project = os.environ.get("WANDB_PROJECT", "")
+    wandb_entity = os.environ.get("WANDB_ENTITY", "")
+
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
     head_lr = float(os.environ.get("HEAD_LR", 0.008))
@@ -1191,6 +1195,30 @@ def main() -> None:
     )
     log0(f"seed:{args.seed}")
 
+    # W&B init (rank 0 only, opt-in via WANDB_PROJECT env var)
+    _wandb = None
+    if master_process and args.wandb_project:
+        import wandb
+        _wandb = wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity or None,
+            name=args.run_id,
+            config={
+                "vocab_size": args.vocab_size, "num_layers": args.num_layers,
+                "model_dim": args.model_dim, "num_heads": args.num_heads,
+                "num_kv_heads": args.num_kv_heads, "mlp_mult": args.mlp_mult,
+                "train_seq_len": args.train_seq_len, "train_batch_tokens": args.train_batch_tokens,
+                "recurse_train_min": args.recurse_train_min, "recurse_train_max": args.recurse_train_max,
+                "recurse_eval": args.recurse_eval, "recurse_temp": args.recurse_temp,
+                "recurse_ema": args.recurse_ema, "recurse_step_weight": args.recurse_step_weight,
+                "mdlm_time_eps": args.mdlm_time_eps, "mdlm_loss_weight": args.mdlm_loss_weight,
+                "eval_lookahead": args.eval_lookahead,
+                "matrix_lr": args.matrix_lr, "tied_embed_lr": args.tied_embed_lr,
+                "muon_momentum": args.muon_momentum, "n_params": n_params,
+            },
+        )
+        log0(f"wandb:enabled project={args.wandb_project} run={_wandb.id}")
+
     # -----------------------------
     # DATA LOADER & MODEL WARMUP
     # -----------------------------
@@ -1275,6 +1303,10 @@ def main() -> None:
                 f"step:{step}/{args.iterations} val_loss:{val_loss:.4f} val_bpb:{val_bpb:.4f} "
                 f"train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms"
             )
+            if _wandb is not None:
+                _wandb.log({"val/loss": val_loss, "val/bpb": val_bpb,
+                            "timing/train_time_s": training_time_ms / 1000,
+                            "timing/step_avg_ms": training_time_ms / max(step, 1)}, step=step)
             torch.cuda.synchronize()
             t0 = time.perf_counter()
 
@@ -1332,6 +1364,14 @@ def main() -> None:
                 f"step:{step}/{args.iterations} train_loss:{train_loss.item():.4f} "
                 f"train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / step:.2f}ms"
             )
+            if _wandb is not None:
+                _wandb.log({
+                    "train/loss": train_loss.item(),
+                    "train/lr_scale": scale,
+                    "train/num_recurse": nr,
+                    "timing/train_time_s": approx_training_time_ms / 1000,
+                    "timing/step_avg_ms": approx_training_time_ms / step,
+                }, step=step)
 
         # Needed to sync whether we've reached the wallclock cap.
         reached_cap = max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms
@@ -1405,6 +1445,24 @@ def main() -> None:
         f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
     )
     log0(f"final_int8_zlib_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
+
+    eval_time_ms = 1000.0 * (time.perf_counter() - t_qeval)
+    if _wandb is not None:
+        _wandb.log({
+            "final/val_loss": q_val_loss, "final/val_bpb": q_val_bpb,
+            "final/artifact_bytes": quant_file_bytes + code_bytes,
+            "final/model_bytes": quant_file_bytes,
+            "timing/total_train_s": training_time_ms / 1000,
+            "timing/eval_s": eval_time_ms / 1000,
+            "timing/total_steps": step,
+            "memory/peak_allocated_mib": torch.cuda.max_memory_allocated() // 1024 // 1024,
+        })
+        _wandb.summary["val_bpb"] = q_val_bpb
+        _wandb.summary["artifact_bytes"] = quant_file_bytes + code_bytes
+        _wandb.summary["train_steps"] = step
+        _wandb.summary["train_time_s"] = training_time_ms / 1000
+        _wandb.summary["eval_time_s"] = eval_time_ms / 1000
+        _wandb.finish()
 
     if distributed:
         dist.destroy_process_group()
