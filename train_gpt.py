@@ -250,6 +250,7 @@ def eval_val(
     base_bytes_lut: Tensor,
     has_leading_space_lut: Tensor,
     is_boundary_token_lut: Tensor,
+    log_fn=None,
 ) -> tuple[float, float]:
     # Validation computes two metrics:
     # - val_loss: token cross-entropy (natural log)
@@ -289,7 +290,10 @@ def eval_val(
         #
         # Cost: N + (L-1) forward passes per sequence (not L*N)
 
-        for batch_seq_start in range(seq_start, seq_end, local_batch_seqs):
+        total_batches = (seq_end - seq_start + local_batch_seqs - 1) // local_batch_seqs
+        eval_t0 = time.perf_counter()
+
+        for batch_idx, batch_seq_start in enumerate(range(seq_start, seq_end, local_batch_seqs)):
             batch_seq_end = min(batch_seq_start + local_batch_seqs, seq_end)
             raw_start = batch_seq_start * L
             raw_end = batch_seq_end * L + 1
@@ -373,6 +377,14 @@ def eval_val(
                     if new_mask_end > i + lookahead:
                         mask_pos[:, new_mask_end - 1] = True
                         soft_embeds[:, new_mask_end - 1, :] = avg_embed + mask_emb
+
+            if log_fn is not None:
+                elapsed = time.perf_counter() - eval_t0
+                running_loss = (val_loss_sum / max(val_token_count, 1)).item()
+                log_fn(f"eval_progress: batch {batch_idx+1}/{total_batches} "
+                       f"seqs={batch_seq_end-seq_start}/{seq_end-seq_start} "
+                       f"running_loss={running_loss:.4f} "
+                       f"elapsed={elapsed:.1f}s")
 
     if dist.is_available() and dist.is_initialized():
         dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
@@ -1304,6 +1316,7 @@ def main() -> None:
                 base_bytes_lut,
                 has_leading_space_lut,
                 is_boundary_token_lut,
+                log_fn=log0,
             )
             log0(
                 f"step:{step}/{args.iterations} val_loss:{val_loss:.4f} val_bpb:{val_bpb:.4f} "
@@ -1445,6 +1458,7 @@ def main() -> None:
         base_bytes_lut,
         has_leading_space_lut,
         is_boundary_token_lut,
+        log_fn=log0,
     )
     torch.cuda.synchronize()
     log0(
