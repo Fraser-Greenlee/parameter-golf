@@ -1307,6 +1307,10 @@ def main() -> None:
         for opt, state in zip(optimizers, initial_optimizer_states, strict=True):
             opt.load_state_dict(state)
         zero_grad_all()
+        del initial_model_state, initial_optimizer_states  # free CPU copies
+        torch.cuda.empty_cache()
+        log0(f"warmup_done: gpu_mem_alloc={torch.cuda.memory_allocated()//1024//1024}MiB "
+             f"gpu_mem_reserved={torch.cuda.memory_reserved()//1024//1024}MiB")
         if distributed:
             model.require_backward_grad_sync = True
         train_loader = DistributedTokenLoader(args.train_files, rank, world_size, device)
@@ -1326,6 +1330,8 @@ def main() -> None:
 
         should_validate = last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0)
         if should_validate:
+            log0(f"pre_eval: step={step} gpu_mem_alloc={torch.cuda.memory_allocated()//1024//1024}MiB "
+                 f"gpu_mem_reserved={torch.cuda.memory_reserved()//1024//1024}MiB")
             torch.cuda.synchronize()
             training_time_ms += 1000.0 * (time.perf_counter() - t0)
             val_loss, val_bpb = eval_val(
