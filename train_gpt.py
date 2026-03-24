@@ -311,7 +311,7 @@ def eval_val(
                 for _ in range(args.recurse_eval):
                     inputs_embeds = torch.where(mask_pos.unsqueeze(-1), soft_embeds, base_embeds)
                     x = F.rms_norm(inputs_embeds, (H,))
-                    h = model.forward_body(x, attn_mode="xsa_bidir")
+                    h = model.forward_body(x, attn_mode="bidirectional")
                     logits = model._compute_logits(h.reshape(-1, H)).reshape(B, L, -1)
                     # Update soft embeddings at masked positions
                     if mask_pos.any():
@@ -350,7 +350,7 @@ def eval_val(
                     # 1 incremental forward pass (soft embeddings already warm)
                     inputs_embeds = torch.where(mask_pos.unsqueeze(-1), soft_embeds, base_embeds)
                     x = F.rms_norm(inputs_embeds, (H,))
-                    h = model.forward_body(x, attn_mode="xsa_bidir")
+                    h = model.forward_body(x, attn_mode="bidirectional")
                     logits = model._compute_logits(h.reshape(-1, H)).reshape(B, L, -1)
                     # Refresh soft embeddings at remaining masked positions
                     if mask_pos.any():
@@ -908,7 +908,7 @@ class GPT(nn.Module):
             # Blend: soft at masked, base at unmasked (ref: modeling_recursive.py:287)
             inputs_embeds = torch.where(masked_indices.unsqueeze(-1), soft_embeds, base_embeds)
             x = F.rms_norm(inputs_embeds, (H,))
-            h = self.forward_body(x, attn_mode="xsa_bidir")
+            h = self.forward_body(x, attn_mode="bidirectional")
             logits = self._compute_logits(h.reshape(-1, H)).reshape(B, L, -1)
             all_logits.append(logits)
 
@@ -971,7 +971,7 @@ class GPT(nn.Module):
         for t_step in range(num_recurse):
             inputs_embeds = torch.where(mask_pos.unsqueeze(-1), soft_embeds, base_embeds)
             x = F.rms_norm(inputs_embeds, (H,))
-            h = self.forward_body(x, attn_mode="xsa_bidir")
+            h = self.forward_body(x, attn_mode="bidirectional")
             logits = self._compute_logits(h.reshape(-1, H)).reshape(B, L, -1)
 
             if t_step < num_recurse - 1 and mask_pos.any():
@@ -1105,9 +1105,10 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
-    # _xsa_bidir_attention is marked @torch.compiler.disable (flash_attn external call).
-    # The rest of forward_body compiles normally.
-    base_model.forward_body = torch.compile(base_model.forward_body)
+    # torch.compile: set COMPILE=1 to enable. Off by default for MDLM (flash_attn
+    # external calls + graph breaks cause OOM during compilation warmup).
+    if bool(int(os.environ.get("COMPILE", "0"))):
+        base_model.forward_body = torch.compile(base_model.forward_body)
     compiled_model = base_model
     model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
 
