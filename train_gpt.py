@@ -310,26 +310,50 @@ def eval_val(
                 mask_pos[:, 0:mask_end] = True
                 soft_embeds[mask_pos] = avg_embed + mask_emb
 
-                # Warm up: N recursive passes on the initial masked sequence
-                for _ in range(args.recurse_eval):
+                def _forward_and_update_soft(soft_embeds, mask_pos, score_pos=None):
+                    """Forward pass, update soft embeddings, optionally score one position.
+                    Converts logits -> soft embeddings immediately to avoid holding (B,L,V) in memory.
+                    Returns (soft_embeds, scored_logits_or_None)."""
                     inputs_embeds = torch.where(mask_pos.unsqueeze(-1), soft_embeds, base_embeds)
                     x = F.rms_norm(inputs_embeds, (H,))
                     h = m.forward_body(x, attn_mode="bidirectional")
-                    logits = m._compute_logits(h.reshape(-1, H)).reshape(B, L, -1)
-                    # Update soft embeddings — keep only soft embeds, discard logits
+                    h_flat = h.reshape(-1, H)
+                    del h
+
+                    # Extract score for one position BEFORE computing full logits
+                    scored = None
+                    if score_pos is not None:
+                        pos_h = h_flat.reshape(B, L, H)[:, score_pos, :]  # (B, H)
+                        pos_logits = m._compute_logits(pos_h)  # (B, V)
+                        scored = pos_logits
+
+                    # Update soft embeddings at masked positions only
+                    # Compute logits ONLY for masked positions (not full B*L)
                     if mask_pos.any():
-                        masked_logits = logits[mask_pos]
+                        masked_h = h_flat.reshape(B, L, H)[mask_pos]  # (num_masked, H)
+                        masked_logits = m._compute_logits(masked_h)  # (num_masked, V)
                         weights = F.softmax(masked_logits / args.recurse_temp, dim=-1)
-                        soft_emb = weights @ m.tok_emb.weight + mask_emb
-                        soft_embeds = base_embeds.clone()
-                        soft_embeds[mask_pos] = soft_emb
+                        soft_emb = weights @ m.tok_emb.weight + mask_emb  # (num_masked, H)
+                        del masked_logits, weights  # free V-dim tensors immediately
+                        new_soft = base_embeds.clone()
+                        new_soft[mask_pos] = soft_emb
+                        return new_soft, scored
+                    return soft_embeds, scored
+
+                # Warm up: N recursive passes on the initial masked sequence
+                for _ in range(args.recurse_eval):
+                    soft_embeds, _ = _forward_and_update_soft(soft_embeds, mask_pos)
 
                 # Score each position by shifting right
                 for i in range(L):
-                    # Score position i — extract only position i's logit to save memory
-                    scored_logits = logits[:, i, :]  # (B, V)
+                    # Forward: update soft embeds + score position i
+                    soft_embeds, scored_logits = _forward_and_update_soft(
+                        soft_embeds, mask_pos, score_pos=i
+                    )
+
                     scored_targets = full_y[:, i]
                     pos_loss = F.cross_entropy(scored_logits.float(), scored_targets, reduction="sum")
+                    del scored_logits
                     val_loss_sum += pos_loss.to(torch.float64)
                     val_token_count += float(B)
 
@@ -349,20 +373,6 @@ def eval_val(
                     if new_mask_end > i + lookahead:
                         mask_pos[:, new_mask_end - 1] = True
                         soft_embeds[:, new_mask_end - 1, :] = avg_embed + mask_emb
-
-                    # 1 incremental forward pass — compute logits but keep soft embeds compact
-                    inputs_embeds = torch.where(mask_pos.unsqueeze(-1), soft_embeds, base_embeds)
-                    x = F.rms_norm(inputs_embeds, (H,))
-                    h = m.forward_body(x, attn_mode="bidirectional")
-                    logits = m._compute_logits(h.reshape(-1, H)).reshape(B, L, -1)
-                    # Refresh soft embeddings
-                    if mask_pos.any():
-                        masked_logits = logits[mask_pos]
-                        weights = F.softmax(masked_logits / args.recurse_temp, dim=-1)
-                        soft_emb = weights @ m.tok_emb.weight + mask_emb
-                        soft_embeds = base_embeds.clone()
-                        soft_embeds[mask_pos] = soft_emb
-                    del h  # free hidden states
 
     if dist.is_available() and dist.is_initialized():
         dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
