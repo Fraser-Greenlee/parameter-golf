@@ -86,7 +86,7 @@ class Hyperparameters:
     recurse_step_weight = os.environ.get("RECURSE_STEP_WEIGHT", "linear")
     mdlm_time_eps = float(os.environ.get("MDLM_TIME_EPS", 1e-3))
     mdlm_loss_weight = os.environ.get("MDLM_LOSS_WEIGHT", "scheduler")  # "scheduler" or "uniform"
-    eval_stride = int(os.environ.get("EVAL_STRIDE", 64))  # sliding window stride for eval
+    eval_lookahead = int(os.environ.get("EVAL_LOOKAHEAD", 128))  # masked future positions during eval
 
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
@@ -264,44 +264,52 @@ def eval_val(
     val_token_count = torch.zeros((), device=device, dtype=torch.float64)
     val_byte_count = torch.zeros((), device=device, dtype=torch.float64)
 
-    stride = args.eval_stride
+    lookahead = args.eval_lookahead
+    L = args.train_seq_len
     model.eval()
     with torch.inference_mode():
+        # MDLM eval: stride=1, score left-most masked position only.
+        # For each token i: ground truth [0..i-1], [MASK] for [i..i+lookahead-1].
+        # Recursive passes refine the full lookahead window bidirectionally,
+        # but only position i (left-most prediction) is scored.
         for batch_seq_start in range(seq_start, seq_end, local_batch_seqs):
             batch_seq_end = min(batch_seq_start + local_batch_seqs, seq_end)
-            raw_start = batch_seq_start * args.train_seq_len
-            raw_end = batch_seq_end * args.train_seq_len + 1
+            raw_start = batch_seq_start * L
+            raw_end = batch_seq_end * L + 1
             local = val_tokens[raw_start:raw_end].to(device=device, dtype=torch.int64, non_blocking=True)
-            x = local[:-1].reshape(-1, args.train_seq_len)
-            y = local[1:].reshape(-1, args.train_seq_len)
-            L = args.train_seq_len
+            full_x = local[:-1].reshape(-1, L)  # (B, L)
+            full_y = local[1:].reshape(-1, L)   # (B, L)
+            B = full_x.shape[0]
 
-            # MDLM eval: mask rightmost `stride` positions, score them with bidirectional context.
-            # Ground truth for positions 0..L-stride-1, [MASK] for L-stride..L-1.
-            masked_x = x.clone()
-            masked_x[:, -stride:] = mask_token_id
+            # Score each position: mask from pos i onwards (capped by lookahead)
+            # Batch multiple positions for efficiency: process each seq position-by-position
+            for i in range(L):
+                masked_x = full_x.clone()
+                # Mask positions i..min(i+lookahead, L)-1
+                mask_end = min(i + lookahead, L)
+                masked_x[:, i:mask_end] = mask_token_id
 
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                logits = model.forward_logits(
-                    masked_x, num_recurse=args.recurse_eval,
-                    recurse_temp=args.recurse_temp, recurse_ema=args.recurse_ema,
-                    mask_token_id=mask_token_id,
-                )  # (B, L, V)
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                    logits = model.forward_logits(
+                        masked_x, num_recurse=args.recurse_eval,
+                        recurse_temp=args.recurse_temp, recurse_ema=args.recurse_ema,
+                        mask_token_id=mask_token_id,
+                    )  # (B, L, V)
 
-            # Score only the masked (rightmost stride) positions
-            scored_logits = logits[:, -stride:, :].reshape(-1, logits.size(-1))
-            scored_targets = y[:, -stride:].reshape(-1)
-            batch_loss = F.cross_entropy(scored_logits.float(), scored_targets, reduction="mean").detach()
-            batch_token_count = float(scored_targets.numel())
+                # Score position i only (the left-most masked prediction)
+                scored_logits = logits[:, i, :]  # (B, V)
+                scored_targets = full_y[:, i]     # (B,)
+                pos_loss = F.cross_entropy(scored_logits.float(), scored_targets, reduction="sum").detach()
 
-            val_loss_sum += batch_loss.to(torch.float64) * batch_token_count
-            val_token_count += batch_token_count
-            # BPB byte counting on scored positions
-            prev_ids = x[:, -stride-1:-1].reshape(-1) if stride < L else x[:, :stride].reshape(-1)
-            tgt_ids = scored_targets
-            token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
-            token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
-            val_byte_count += token_bytes.to(torch.float64).sum()
+                val_loss_sum += pos_loss.to(torch.float64)
+                val_token_count += float(B)
+
+                # BPB byte counting
+                prev_ids = full_x[:, i]  # token at position i (before the target)
+                tgt_ids = scored_targets
+                token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
+                token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
+                val_byte_count += token_bytes.to(torch.float64).sum()
 
     if dist.is_available() and dist.is_initialized():
         dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
@@ -1057,7 +1065,7 @@ def main() -> None:
     log0("sdp_backends:cudnn=False flash=True mem_efficient=False math=False")
     log0(f"attention_mode:gqa num_heads:{args.num_heads} num_kv_heads:{args.num_kv_heads}")
     log0(f"mdlm:train_recurse={args.recurse_train_min}-{args.recurse_train_max} "
-         f"eval_recurse={args.recurse_eval} eval_stride={args.eval_stride} "
+         f"eval_recurse={args.recurse_eval} eval_lookahead={args.eval_lookahead} "
          f"temp={args.recurse_temp} ema={args.recurse_ema} "
          f"step_weight={args.recurse_step_weight} "
          f"loss_weight={args.mdlm_loss_weight} time_eps={args.mdlm_time_eps} "

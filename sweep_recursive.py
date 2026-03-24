@@ -83,7 +83,7 @@ CONFIGS = {
     # === Eval stride ===
     "mdlm_r2_stride128": {
         "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
-        "RECURSE_EVAL": "2", "EVAL_STRIDE": "128",
+        "RECURSE_EVAL": "2", "EVAL_LOOKAHEAD": "128",
     },
 
     # === Combined ===
