@@ -649,6 +649,7 @@ def apply_rotary_emb(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
 from flash_attn import flash_attn_func as _flash_attn_func
 
 
+@torch.compiler.disable
 def _xsa_bidir_attention(q: Tensor, k: Tensor, v: Tensor, scale: float, gqa: bool) -> Tensor:
     """Exact XSA (exclusive self-attention) with bidirectional context.
 
@@ -1104,8 +1105,8 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
-    # MDLM forward has dynamic masking, string-based attn_mode dispatch, and explicit
-    # attention masks that are incompatible with fullgraph=True. Use default mode.
+    # _xsa_bidir_attention is marked @torch.compiler.disable (flash_attn external call).
+    # The rest of forward_body compiles normally.
     base_model.forward_body = torch.compile(base_model.forward_body)
     compiled_model = base_model
     model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
