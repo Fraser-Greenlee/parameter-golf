@@ -1,7 +1,12 @@
-"""
-The `train_gpt.py` and `train_gpt_mlx.py` scripts are intended as good launching-off points for new participants, not SOTA configs. We'll accept PRs that tune, improve, or simplify these scripts without significantly increasing complexity, but competitive submissions should stay in the `/records` folder.
+"""Recursive Masked Diffusion Language Model (MDLM) for Parameter Golf.
 
-Hard stop: To keep readable for newcomers, let's make sure `train_gpt.py` and `train_gpt_mlx.py` never are longer than 1500 lines.
+Training: Bidirectional XSA attention, random masking with linear alpha schedule,
+MDLM loss (CE on masked positions weighted by 1/t), recursive soft-embedding
+refinement. Based on dllm-recursive (arxiv.org/abs/2406.07524).
+
+Eval: Left-to-right sliding window — ground truth context on the left, [MASK] tokens
+on the right, bidirectional recursive passes give speculative future context from
+soft predictions. Scored positions see both real past and predicted future.
 """
 
 from __future__ import annotations
@@ -70,14 +75,18 @@ class Hyperparameters:
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
 
-    # Recursive soft-embedding diffusion. Defaults disable recursion (baseline unchanged).
+    # MDLM (Masked Diffusion Language Model) with recursive soft-embedding refinement.
+    # Training: bidirectional attention, random masking, loss on masked positions.
+    # Eval: left-to-right sliding window with masked future positions.
     recurse_train_min = int(os.environ.get("RECURSE_TRAIN_MIN", 1))
-    recurse_train_max = int(os.environ.get("RECURSE_TRAIN_MAX", 1))  # 1=disabled
+    recurse_train_max = int(os.environ.get("RECURSE_TRAIN_MAX", 1))  # 1=single pass
     recurse_eval = int(os.environ.get("RECURSE_EVAL", 1))
     recurse_temp = float(os.environ.get("RECURSE_TEMP", 1.0))
     recurse_ema = float(os.environ.get("RECURSE_EMA", 1.0))  # 1.0=no blending
     recurse_step_weight = os.environ.get("RECURSE_STEP_WEIGHT", "linear")
-    recurse_xsa = bool(int(os.environ.get("RECURSE_XSA", "0")))
+    mdlm_time_eps = float(os.environ.get("MDLM_TIME_EPS", 1e-3))
+    mdlm_loss_weight = os.environ.get("MDLM_LOSS_WEIGHT", "scheduler")  # "scheduler" or "uniform"
+    eval_stride = int(os.environ.get("EVAL_STRIDE", 64))  # sliding window stride for eval
 
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
@@ -255,6 +264,7 @@ def eval_val(
     val_token_count = torch.zeros((), device=device, dtype=torch.float64)
     val_byte_count = torch.zeros((), device=device, dtype=torch.float64)
 
+    stride = args.eval_stride
     model.eval()
     with torch.inference_mode():
         for batch_seq_start in range(seq_start, seq_end, local_batch_seqs):
@@ -264,17 +274,31 @@ def eval_val(
             local = val_tokens[raw_start:raw_end].to(device=device, dtype=torch.int64, non_blocking=True)
             x = local[:-1].reshape(-1, args.train_seq_len)
             y = local[1:].reshape(-1, args.train_seq_len)
+            L = args.train_seq_len
+
+            # MDLM eval: mask rightmost `stride` positions, score them with bidirectional context.
+            # Ground truth for positions 0..L-stride-1, [MASK] for L-stride..L-1.
+            masked_x = x.clone()
+            masked_x[:, -stride:] = mask_token_id
+
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                batch_loss = model(x, y, num_recurse=args.recurse_eval,
-                                   recurse_temp=args.recurse_temp,
-                                   recurse_ema=args.recurse_ema,
-                                   recurse_xsa=args.recurse_xsa,
-                                   recurse_step_weight=args.recurse_step_weight).detach()
-            batch_token_count = float(y.numel())
+                logits = model.forward_logits(
+                    masked_x, num_recurse=args.recurse_eval,
+                    recurse_temp=args.recurse_temp, recurse_ema=args.recurse_ema,
+                    mask_token_id=mask_token_id,
+                )  # (B, L, V)
+
+            # Score only the masked (rightmost stride) positions
+            scored_logits = logits[:, -stride:, :].reshape(-1, logits.size(-1))
+            scored_targets = y[:, -stride:].reshape(-1)
+            batch_loss = F.cross_entropy(scored_logits.float(), scored_targets, reduction="mean").detach()
+            batch_token_count = float(scored_targets.numel())
+
             val_loss_sum += batch_loss.to(torch.float64) * batch_token_count
             val_token_count += batch_token_count
-            prev_ids = x.reshape(-1)
-            tgt_ids = y.reshape(-1)
+            # BPB byte counting on scored positions
+            prev_ids = x[:, -stride-1:-1].reshape(-1) if stride < L else x[:, :stride].reshape(-1)
+            tgt_ids = scored_targets
             token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
             token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
             val_byte_count += token_bytes.to(torch.float64).sum()
@@ -593,7 +617,7 @@ class CausalSelfAttention(nn.Module):
         self.q_gain = nn.Parameter(torch.full((num_heads,), qk_gain_init, dtype=torch.float32))
         self.rotary = Rotary(self.head_dim, base=rope_base)
 
-    def forward(self, x: Tensor, use_xsa: bool = False) -> Tensor:
+    def forward(self, x: Tensor, attn_mode: str = "causal") -> Tensor:
         bsz, seqlen, dim = x.shape
         q = self.c_q(x).reshape(bsz, seqlen, self.num_heads, self.head_dim).transpose(1, 2)
         k = self.c_k(x).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim).transpose(1, 2)
@@ -604,19 +628,16 @@ class CausalSelfAttention(nn.Module):
         q = apply_rotary_emb(q, cos, sin)
         k = apply_rotary_emb(k, cos, sin)
         q = q * self.q_gain.to(dtype=q.dtype)[None, :, None, None]
-        if use_xsa:
-            # XSA: causal mask with self-attention excluded (diagonal = -inf)
-            mask = torch.tril(torch.ones(seqlen, seqlen, device=x.device, dtype=torch.bool))
-            mask.fill_diagonal_(False)  # exclude self-position
-            y = F.scaled_dot_product_attention(
-                q, k, v, attn_mask=mask,
-                enable_gqa=(self.num_kv_heads != self.num_heads),
-            )
-        else:
-            y = F.scaled_dot_product_attention(
-                q, k, v, attn_mask=None, is_causal=True,
-                enable_gqa=(self.num_kv_heads != self.num_heads),
-            )
+        gqa = (self.num_kv_heads != self.num_heads)
+        if attn_mode == "xsa_bidir":
+            # Bidirectional with self-attention excluded (diagonal = False)
+            mask = torch.ones(seqlen, seqlen, device=x.device, dtype=torch.bool)
+            mask.fill_diagonal_(False)
+            y = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, enable_gqa=gqa)
+        elif attn_mode == "bidirectional":
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=False, enable_gqa=gqa)
+        else:  # "causal"
+            y = F.scaled_dot_product_attention(q, k, v, attn_mask=None, is_causal=True, enable_gqa=gqa)
         y = y.transpose(1, 2).contiguous().reshape(bsz, seqlen, dim)
         return self.proj(y)
 
@@ -654,10 +675,10 @@ class Block(nn.Module):
         self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.resid_mix = nn.Parameter(torch.stack((torch.ones(dim), torch.zeros(dim))).float())
 
-    def forward(self, x: Tensor, x0: Tensor, use_xsa: bool = False) -> Tensor:
+    def forward(self, x: Tensor, x0: Tensor, attn_mode: str = "causal") -> Tensor:
         mix = self.resid_mix.to(dtype=x.dtype)
         x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
-        attn_out = self.attn(self.attn_norm(x), use_xsa=use_xsa)
+        attn_out = self.attn(self.attn_norm(x), attn_mode=attn_mode)
         x = x + self.attn_scale.to(dtype=x.dtype)[None, None, :] * attn_out
         x = x + self.mlp_scale.to(dtype=x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
         return x
@@ -715,17 +736,17 @@ class GPT(nn.Module):
             if isinstance(module, nn.Linear) and getattr(module, "_zero_init", False):
                 nn.init.zeros_(module.weight)
 
-    def forward_body(self, x: Tensor, use_xsa: bool = False) -> Tensor:
-        """Run transformer blocks with U-Net skip connections. Reusable for recursion."""
+    def forward_body(self, x: Tensor, attn_mode: str = "causal") -> Tensor:
+        """Run transformer blocks with U-Net skip connections."""
         x0 = x
         skips: list[Tensor] = []
         for i in range(self.num_encoder_layers):
-            x = self.blocks[i](x, x0, use_xsa=use_xsa)
+            x = self.blocks[i](x, x0, attn_mode=attn_mode)
             skips.append(x)
         for i in range(self.num_decoder_layers):
             if skips:
                 x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
-            x = self.blocks[self.num_encoder_layers + i](x, x0, use_xsa=use_xsa)
+            x = self.blocks[self.num_encoder_layers + i](x, x0, attn_mode=attn_mode)
         return self.final_norm(x)
 
     def _compute_logits(self, h: Tensor) -> Tensor:
@@ -749,39 +770,113 @@ class GPT(nn.Module):
 
     def forward(self, input_ids: Tensor, target_ids: Tensor,
                 num_recurse: int = 1, recurse_temp: float = 1.0,
-                recurse_ema: float = 1.0, recurse_xsa: bool = False,
-                recurse_step_weight: str = "linear") -> Tensor:
+                recurse_ema: float = 1.0, recurse_step_weight: str = "linear",
+                mask_token_id: int = -1, time_epsilon: float = 1e-3,
+                mdlm_loss_weight_type: str = "scheduler") -> Tensor:
+        """MDLM forward: mask tokens, predict with bidirectional XSA attention, recurse."""
         B, L = input_ids.shape
         H = self.tok_emb.weight.shape[1]
-        targets = target_ids.reshape(-1)
 
-        # Pass 0: standard token embedding forward
-        x = F.rms_norm(self.tok_emb(input_ids), (H,))
-        h = self.forward_body(x)
-        logits = self._compute_logits(h.reshape(-1, H))
+        # --- MDLM masking (ref: mdlm.py:247-256) ---
+        t = time_epsilon + (1 - 2 * time_epsilon) * torch.rand(B, device=input_ids.device)
+        p_mask = t.unsqueeze(1).expand(B, L)  # linear alpha: alpha(t)=1-t, p_mask=t
+        masked_indices = torch.rand(B, L, device=input_ids.device) < p_mask
 
-        if num_recurse <= 1:
-            return F.cross_entropy(logits.float(), targets, reduction="mean")
+        # --- Loss weights w(t) = 1/t (ref: alpha.py:87-88) ---
+        if mdlm_loss_weight_type == "scheduler":
+            loss_weights = (1.0 / t.clamp(min=time_epsilon)).unsqueeze(1).expand(B, L)
+        else:
+            loss_weights = torch.ones(B, L, device=input_ids.device)
 
-        # Multi-pass recursive refinement
-        weights = self._step_weights(num_recurse, recurse_step_weight)
-        w_sum = sum(weights)
-        total_loss = weights[0] * F.cross_entropy(logits.float(), targets, reduction="mean")
+        targets = input_ids  # predict original tokens at masked positions
 
-        for t in range(1, num_recurse):
-            # Soft embedding: logits -> probs -> weighted embedding sum (differentiable via probs)
-            with torch.no_grad():
-                probs = F.softmax(logits.float() / recurse_temp, dim=-1)  # (B*L, V)
-            soft_emb = probs.to(self.tok_emb.weight.dtype) @ self.tok_emb.weight  # (B*L, H)
-            # EMA blending with previous hidden states
-            if recurse_ema < 1.0:
-                soft_emb = (1.0 - recurse_ema) * h.reshape(-1, H).detach() + recurse_ema * soft_emb
-            x_new = F.rms_norm(soft_emb.reshape(B, L, H), (H,))
-            h = self.forward_body(x_new, use_xsa=recurse_xsa)
-            logits = self._compute_logits(h.reshape(-1, H))
-            total_loss = total_loss + weights[t] * F.cross_entropy(logits.float(), targets, reduction="mean")
+        # --- Initial soft embeddings (ref: modeling_recursive.py:1483-1486) ---
+        base_embeds = self.tok_emb(input_ids)  # (B, L, H)
+        mask_emb = self.tok_emb.weight[mask_token_id]  # (H,)
+        soft_embeds = base_embeds.clone()
+        if masked_indices.any():
+            avg_embed = self.tok_emb.weight.mean(dim=0)
+            soft_embeds[masked_indices] = avg_embed + mask_emb
 
-        return total_loss / w_sum
+        # --- Recursive loop (ref: modeling_recursive.py:1490-1518) ---
+        all_logits: list[Tensor] = []
+        for t_step in range(num_recurse):
+            # Blend: soft at masked, base at unmasked (ref: modeling_recursive.py:287)
+            inputs_embeds = torch.where(masked_indices.unsqueeze(-1), soft_embeds, base_embeds)
+            x = F.rms_norm(inputs_embeds, (H,))
+            h = self.forward_body(x, attn_mode="xsa_bidir")
+            logits = self._compute_logits(h.reshape(-1, H)).reshape(B, L, -1)
+            all_logits.append(logits)
+
+            # Compute next soft embeddings (ref: modeling_recursive.py:298-321)
+            if t_step < num_recurse - 1:
+                next_soft_embeds = base_embeds.clone()
+                if masked_indices.any():
+                    masked_logits = logits[masked_indices]
+                    weights = F.softmax(masked_logits / recurse_temp, dim=-1)
+                    soft_emb = weights @ self.tok_emb.weight + mask_emb
+                    if recurse_ema < 1.0:
+                        soft_emb = (1 - recurse_ema) * soft_embeds[masked_indices] + recurse_ema * soft_emb
+                    next_soft_embeds[masked_indices] = soft_emb
+                soft_embeds = next_soft_embeds
+
+        # --- Loss (ref: mdlm.py:321-390) ---
+        if not masked_indices.any():
+            return torch.tensor(0.0, device=input_ids.device, requires_grad=True)
+
+        T = len(all_logits)
+        step_ws = self._step_weights(T, recurse_step_weight)
+        iteration_weight_sum = sum(step_ws)
+
+        total_token_loss = None
+        for iter_idx, iter_logits in enumerate(all_logits):
+            sw = step_ws[iter_idx]
+            if sw == 0.0:
+                continue
+            iter_raw_loss = F.cross_entropy(
+                iter_logits[masked_indices].float(), targets[masked_indices], reduction="none"
+            )
+            iter_token_loss = iter_raw_loss * loss_weights[masked_indices] * sw
+            total_token_loss = iter_token_loss if total_token_loss is None else total_token_loss + iter_token_loss
+
+        if total_token_loss is None:
+            return torch.tensor(0.0, device=input_ids.device, requires_grad=True)
+
+        token_loss = total_token_loss / iteration_weight_sum
+        return token_loss.sum() / masked_indices.sum().float().clamp(min=1.0)
+
+    def forward_logits(self, input_ids: Tensor, num_recurse: int = 1,
+                       recurse_temp: float = 1.0, recurse_ema: float = 1.0,
+                       mask_token_id: int = -1) -> Tensor:
+        """Forward returning final logits (for eval). No loss computation."""
+        B, L = input_ids.shape
+        H = self.tok_emb.weight.shape[1]
+        mask_pos = (input_ids == mask_token_id)
+
+        base_embeds = self.tok_emb(input_ids)
+        mask_emb = self.tok_emb.weight[mask_token_id]
+        soft_embeds = base_embeds.clone()
+        if mask_pos.any():
+            avg_embed = self.tok_emb.weight.mean(dim=0)
+            soft_embeds[mask_pos] = avg_embed + mask_emb
+
+        for t_step in range(num_recurse):
+            inputs_embeds = torch.where(mask_pos.unsqueeze(-1), soft_embeds, base_embeds)
+            x = F.rms_norm(inputs_embeds, (H,))
+            h = self.forward_body(x, attn_mode="xsa_bidir")
+            logits = self._compute_logits(h.reshape(-1, H)).reshape(B, L, -1)
+
+            if t_step < num_recurse - 1 and mask_pos.any():
+                next_soft_embeds = base_embeds.clone()
+                masked_logits = logits[mask_pos]
+                weights = F.softmax(masked_logits / recurse_temp, dim=-1)
+                soft_emb = weights @ self.tok_emb.weight + mask_emb
+                if recurse_ema < 1.0:
+                    soft_emb = (1 - recurse_ema) * soft_embeds[mask_pos] + recurse_ema * soft_emb
+                next_soft_embeds[mask_pos] = soft_emb
+                soft_embeds = next_soft_embeds
+
+        return logits
 
 
 # -----------------------------
@@ -883,8 +978,10 @@ def main() -> None:
     # MODEL + OPTIMIZER SETUP
     # -----------------------------
 
+    # +1 for [MASK] token used by MDLM
+    mask_token_id = args.vocab_size  # [MASK] = last token in extended vocab
     base_model = GPT(
-        vocab_size=args.vocab_size,
+        vocab_size=args.vocab_size + 1,  # +1 for [MASK]
         num_layers=args.num_layers,
         model_dim=args.model_dim,
         num_heads=args.num_heads,
@@ -900,12 +997,9 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
-    if args.recurse_train_max > 1:
-        # Recursive loop has variable control flow; compile only the body
-        base_model.forward_body = torch.compile(base_model.forward_body, dynamic=False, fullgraph=True)
-        compiled_model = base_model
-    else:
-        compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
+    # MDLM forward has dynamic masking and optional recursion; compile only forward_body
+    base_model.forward_body = torch.compile(base_model.forward_body, dynamic=False, fullgraph=True)
+    compiled_model = base_model
     model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
 
     # Optimizer split:
@@ -962,10 +1056,12 @@ def main() -> None:
     log0(f"world_size:{world_size} grad_accum_steps:{grad_accum_steps}")
     log0("sdp_backends:cudnn=False flash=True mem_efficient=False math=False")
     log0(f"attention_mode:gqa num_heads:{args.num_heads} num_kv_heads:{args.num_kv_heads}")
-    if args.recurse_train_max > 1:
-        log0(f"recursion:train_min={args.recurse_train_min} train_max={args.recurse_train_max} "
-             f"eval={args.recurse_eval} temp={args.recurse_temp} ema={args.recurse_ema} "
-             f"xsa={args.recurse_xsa} step_weight={args.recurse_step_weight}")
+    log0(f"mdlm:train_recurse={args.recurse_train_min}-{args.recurse_train_max} "
+         f"eval_recurse={args.recurse_eval} eval_stride={args.eval_stride} "
+         f"temp={args.recurse_temp} ema={args.recurse_ema} "
+         f"step_weight={args.recurse_step_weight} "
+         f"loss_weight={args.mdlm_loss_weight} time_eps={args.mdlm_time_eps} "
+         f"mask_token_id={mask_token_id}")
     log0(
         f"tie_embeddings:{args.tie_embeddings} embed_lr:{token_lr} "
         f"head_lr:{args.head_lr if base_model.lm_head is not None else 0.0} "
@@ -1084,8 +1180,11 @@ def main() -> None:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                 nr = random.randint(args.recurse_train_min, args.recurse_train_max)
                 loss = model(x, y, num_recurse=nr, recurse_temp=args.recurse_temp,
-                             recurse_ema=args.recurse_ema, recurse_xsa=args.recurse_xsa,
-                             recurse_step_weight=args.recurse_step_weight)
+                             recurse_ema=args.recurse_ema,
+                             recurse_step_weight=args.recurse_step_weight,
+                             mask_token_id=mask_token_id,
+                             time_epsilon=args.mdlm_time_eps,
+                             mdlm_loss_weight_type=args.mdlm_loss_weight)
             train_loss += loss.detach()
             (loss * grad_scale).backward()
         train_loss /= grad_accum_steps

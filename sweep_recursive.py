@@ -19,84 +19,81 @@ from pathlib import Path
 # Each config is a dict of env var overrides on top of defaults.
 # The baseline config matches current SOTA minus competition-specific tricks.
 CONFIGS = {
-    # === Baselines ===
-    "baseline": {
-        "RECURSE_TRAIN_MAX": "1",
-        "RECURSE_EVAL": "1",
+    # === MDLM single pass (no recursion) ===
+    "mdlm_1pass": {
+        "RECURSE_TRAIN_MAX": "1", "RECURSE_EVAL": "1",
     },
 
-    # === Training recursion depth ===
-    "recurse2": {
+    # === Recursion depth ===
+    "mdlm_r2": {
         "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
         "RECURSE_EVAL": "2",
     },
-    "recurse4": {
+    "mdlm_r4": {
         "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "4",
         "RECURSE_EVAL": "4",
     },
-    "recurse2_fixed": {
+    "mdlm_r2_fixed": {
         "RECURSE_TRAIN_MIN": "2", "RECURSE_TRAIN_MAX": "2",
         "RECURSE_EVAL": "2",
     },
 
-    # === Eval-time scaling (train at 2, eval at more) ===
-    "recurse2_eval4": {
+    # === Eval-time scaling ===
+    "mdlm_r2_eval4": {
         "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
         "RECURSE_EVAL": "4",
     },
-    "recurse2_eval8": {
+    "mdlm_r2_eval8": {
         "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
         "RECURSE_EVAL": "8",
     },
 
-    # === XSA ===
-    "recurse2_xsa": {
-        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
-        "RECURSE_EVAL": "2", "RECURSE_XSA": "1",
-    },
-    "recurse4_xsa": {
-        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "4",
-        "RECURSE_EVAL": "4", "RECURSE_XSA": "1",
-    },
-
     # === Temperature ===
-    "recurse2_temp05": {
+    "mdlm_r2_temp05": {
         "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
         "RECURSE_EVAL": "2", "RECURSE_TEMP": "0.5",
     },
-    "recurse2_temp2": {
+    "mdlm_r2_temp2": {
         "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
         "RECURSE_EVAL": "2", "RECURSE_TEMP": "2.0",
     },
 
     # === EMA blending ===
-    "recurse2_ema08": {
+    "mdlm_r2_ema08": {
         "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
         "RECURSE_EVAL": "2", "RECURSE_EMA": "0.8",
     },
-    "recurse2_ema05": {
-        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
-        "RECURSE_EVAL": "2", "RECURSE_EMA": "0.5",
-    },
 
     # === Step weighting ===
-    "recurse2_uniform": {
+    "mdlm_r2_uniform": {
         "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
         "RECURSE_EVAL": "2", "RECURSE_STEP_WEIGHT": "uniform",
     },
-    "recurse2_last1": {
+    "mdlm_r2_last1": {
         "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
         "RECURSE_EVAL": "2", "RECURSE_STEP_WEIGHT": "last_1",
     },
 
-    # === Combined best guesses ===
-    "recurse2_xsa_temp05": {
+    # === MDLM loss weight ===
+    "mdlm_r2_uniform_loss": {
         "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
-        "RECURSE_EVAL": "4", "RECURSE_XSA": "1", "RECURSE_TEMP": "0.5",
+        "RECURSE_EVAL": "2", "MDLM_LOSS_WEIGHT": "uniform",
     },
-    "recurse4_xsa_ema08": {
+
+    # === Eval stride ===
+    "mdlm_r2_stride128": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
+        "RECURSE_EVAL": "2", "EVAL_STRIDE": "128",
+    },
+
+    # === Combined ===
+    "mdlm_r2_temp05_ema08": {
+        "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "2",
+        "RECURSE_EVAL": "4", "RECURSE_TEMP": "0.5", "RECURSE_EMA": "0.8",
+    },
+    "mdlm_r4_ema08": {
         "RECURSE_TRAIN_MIN": "1", "RECURSE_TRAIN_MAX": "4",
-        "RECURSE_EVAL": "4", "RECURSE_XSA": "1", "RECURSE_EMA": "0.8",
+        "RECURSE_EVAL": "4", "RECURSE_EMA": "0.8",
     },
 }
 
