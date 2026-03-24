@@ -831,13 +831,14 @@ class GPT(nn.Module):
         H = self.tok_emb.weight.shape[1]
 
         # --- MDLM masking (ref: mdlm.py:247-256) ---
-        t = time_epsilon + (1 - 2 * time_epsilon) * torch.rand(B, device=input_ids.device)
+        # t ∈ [ε, 1) — matches dllm-recursive exactly (not [ε, 1-ε])
+        t = time_epsilon + (1 - time_epsilon) * torch.rand(B, device=input_ids.device)
         p_mask = t.unsqueeze(1).expand(B, L)  # linear alpha: alpha(t)=1-t, p_mask=t
         masked_indices = torch.rand(B, L, device=input_ids.device) < p_mask
 
-        # --- Loss weights w(t) = 1/t (ref: alpha.py:87-88) ---
+        # --- Loss weights w(t) = -alpha'(t)/(1-alpha(t)) = 1/(t+1e-6) (ref: alpha.py:87-88) ---
         if mdlm_loss_weight_type == "scheduler":
-            loss_weights = (1.0 / t.clamp(min=time_epsilon)).unsqueeze(1).expand(B, L)
+            loss_weights = (1.0 / (t + 1e-6)).unsqueeze(1).expand(B, L)
         else:
             loss_weights = torch.ones(B, L, device=input_ids.device)
 
@@ -896,7 +897,11 @@ class GPT(nn.Module):
             return torch.tensor(0.0, device=input_ids.device, requires_grad=True)
 
         token_loss = total_token_loss / iteration_weight_sum
-        return token_loss.sum() / masked_indices.sum().float().clamp(min=1.0)
+        # "sequence" normalization (ref: mdlm.py:384-385): divide each token's loss
+        # by the number of masked tokens in its sequence, then average across batch
+        tokens_per_seq = masked_indices.sum(dim=1, keepdim=True).expand(B, L)  # (B, L)
+        token_loss_normed = token_loss / tokens_per_seq[masked_indices].float().clamp(min=1.0)
+        return token_loss_normed.sum() / float(B)
 
     def forward_logits(self, input_ids: Tensor, num_recurse: int = 1,
                        recurse_temp: float = 1.0, recurse_ema: float = 1.0,
