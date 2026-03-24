@@ -266,12 +266,22 @@ def eval_val(
 
     lookahead = args.eval_lookahead
     L = args.train_seq_len
+    H = args.model_dim
     model.eval()
     with torch.inference_mode():
-        # MDLM eval: stride=1, score left-most masked position only.
-        # For each token i: ground truth [0..i-1], [MASK] for [i..i+lookahead-1].
-        # Recursive passes refine the full lookahead window bidirectionally,
-        # but only position i (left-most prediction) is scored.
+        # MDLM streaming eval: stride=1, score left-most masked position only.
+        # Amortized recursion: N passes to warm up, then 1 pass per shift.
+        #
+        # For each batch of sequences:
+        #   1. Init: ground truth [0..start-1], [MASK] for [start..start+lookahead-1]
+        #      Run N recursive passes to warm up soft embeddings
+        #   2. Score position `start` (left-most masked)
+        #   3. Shift right: position `start` -> ground truth, append [MASK] on right
+        #      Run 1 forward pass (soft embeddings already warm)
+        #   4. Score position `start+1`, repeat
+        #
+        # Cost: N + (L-1) forward passes per sequence (not L*N)
+
         for batch_seq_start in range(seq_start, seq_end, local_batch_seqs):
             batch_seq_end = min(batch_seq_start + local_batch_seqs, seq_end)
             raw_start = batch_seq_start * L
@@ -281,35 +291,70 @@ def eval_val(
             full_y = local[1:].reshape(-1, L)   # (B, L)
             B = full_x.shape[0]
 
-            # Score each position: mask from pos i onwards (capped by lookahead)
-            # Batch multiple positions for efficiency: process each seq position-by-position
-            for i in range(L):
-                masked_x = full_x.clone()
-                # Mask positions i..min(i+lookahead, L)-1
-                mask_end = min(i + lookahead, L)
-                masked_x[:, i:mask_end] = mask_token_id
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                base_embeds = model.tok_emb(full_x)  # (B, L, H)
+                mask_emb = model.tok_emb.weight[mask_token_id]
+                avg_embed = model.tok_emb.weight.mean(dim=0)
 
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                    logits = model.forward_logits(
-                        masked_x, num_recurse=args.recurse_eval,
-                        recurse_temp=args.recurse_temp, recurse_ema=args.recurse_ema,
-                        mask_token_id=mask_token_id,
-                    )  # (B, L, V)
+                # Initialize: mask from position 0 onwards (first position scored)
+                mask_end = min(lookahead, L)
+                soft_embeds = base_embeds.clone()
+                mask_pos = torch.zeros(B, L, dtype=torch.bool, device=device)
+                mask_pos[:, 0:mask_end] = True
+                soft_embeds[mask_pos] = avg_embed + mask_emb
 
-                # Score position i only (the left-most masked prediction)
-                scored_logits = logits[:, i, :]  # (B, V)
-                scored_targets = full_y[:, i]     # (B,)
-                pos_loss = F.cross_entropy(scored_logits.float(), scored_targets, reduction="sum").detach()
+                # Warm up: N recursive passes on the initial masked sequence
+                for _ in range(args.recurse_eval):
+                    inputs_embeds = torch.where(mask_pos.unsqueeze(-1), soft_embeds, base_embeds)
+                    x = F.rms_norm(inputs_embeds, (H,))
+                    h = model.forward_body(x, attn_mode="xsa_bidir")
+                    logits = model._compute_logits(h.reshape(-1, H)).reshape(B, L, -1)
+                    # Update soft embeddings at masked positions
+                    if mask_pos.any():
+                        masked_logits = logits[mask_pos]
+                        weights = F.softmax(masked_logits / args.recurse_temp, dim=-1)
+                        soft_emb = weights @ model.tok_emb.weight + mask_emb
+                        soft_embeds = base_embeds.clone()
+                        soft_embeds[mask_pos] = soft_emb
 
-                val_loss_sum += pos_loss.to(torch.float64)
-                val_token_count += float(B)
+                # Score each position by shifting right
+                for i in range(L):
+                    # Score position i (the left-most masked)
+                    scored_logits = logits[:, i, :]
+                    scored_targets = full_y[:, i]
+                    pos_loss = F.cross_entropy(scored_logits.float(), scored_targets, reduction="sum").detach()
+                    val_loss_sum += pos_loss.to(torch.float64)
+                    val_token_count += float(B)
 
-                # BPB byte counting
-                prev_ids = full_x[:, i]  # token at position i (before the target)
-                tgt_ids = scored_targets
-                token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
-                token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
-                val_byte_count += token_bytes.to(torch.float64).sum()
+                    # BPB byte counting
+                    prev_ids = full_x[:, i]
+                    tgt_ids = scored_targets
+                    token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
+                    token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
+                    val_byte_count += token_bytes.to(torch.float64).sum()
+
+                    if i == L - 1:
+                        break  # last position, no more shifting
+
+                    # Shift right: position i becomes ground truth, extend mask on right
+                    mask_pos[:, i] = False  # unmasked (now ground truth)
+                    new_mask_end = min(i + 1 + lookahead, L)
+                    if new_mask_end > i + lookahead:
+                        mask_pos[:, new_mask_end - 1] = True  # new rightmost mask
+                        soft_embeds[:, new_mask_end - 1, :] = avg_embed + mask_emb
+
+                    # 1 incremental forward pass (soft embeddings already warm)
+                    inputs_embeds = torch.where(mask_pos.unsqueeze(-1), soft_embeds, base_embeds)
+                    x = F.rms_norm(inputs_embeds, (H,))
+                    h = model.forward_body(x, attn_mode="xsa_bidir")
+                    logits = model._compute_logits(h.reshape(-1, H)).reshape(B, L, -1)
+                    # Refresh soft embeddings at remaining masked positions
+                    if mask_pos.any():
+                        masked_logits = logits[mask_pos]
+                        weights = F.softmax(masked_logits / args.recurse_temp, dim=-1)
+                        soft_emb = weights @ model.tok_emb.weight + mask_emb
+                        soft_embeds = base_embeds.clone()
+                        soft_embeds[mask_pos] = soft_emb
 
     if dist.is_available() and dist.is_initialized():
         dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
