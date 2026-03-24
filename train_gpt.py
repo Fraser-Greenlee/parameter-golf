@@ -642,6 +642,67 @@ def apply_rotary_emb(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
     return torch.cat((x1 * cos + x2 * sin, x1 * (-sin) + x2 * cos), dim=-1)
 
 
+# Try to import flash_attn for exact XSA at Flash Attention speed.
+# Falls back to explicit mask (slower) if unavailable.
+try:
+    from flash_attn import flash_attn_func as _flash_attn_func
+    _HAS_FLASH_ATTN = True
+except ImportError:
+    _HAS_FLASH_ATTN = False
+
+
+def _xsa_bidir_attention(q: Tensor, k: Tensor, v: Tensor, scale: float, gqa: bool) -> Tensor:
+    """Exact XSA (exclusive self-attention) with bidirectional context.
+
+    Each position attends to ALL other positions but NOT itself.
+    Uses Flash Attention + LSE post-correction when available (O(L) memory, full speed).
+    Falls back to explicit mask SDPA otherwise.
+
+    q: (B, H_q, L, D), k: (B, H_kv, L, D), v: (B, H_kv, L, D)
+    Returns: (B, H_q, L, D)
+    """
+    if _HAS_FLASH_ATTN:
+        # flash_attn_func expects (B, L, H, D) layout
+        B, H_q, L, D = q.shape
+        H_kv = k.shape[1]
+        q_fa = q.transpose(1, 2).contiguous()  # (B, L, H_q, D)
+        k_fa = k.transpose(1, 2).contiguous()  # (B, L, H_kv, D)
+        v_fa = v.transpose(1, 2).contiguous()  # (B, L, H_kv, D)
+
+        # Full bidirectional attention at Flash speed, returning LSE
+        out, softmax_lse, _ = _flash_attn_func(
+            q_fa, k_fa, v_fa, softmax_scale=scale, causal=False, return_attn_probs=True
+        )
+        # out: (B, L, H_q, D), softmax_lse: (B, H_q, L)
+
+        # For GQA: expand k/v to match q heads for self-score computation
+        if gqa and H_kv != H_q:
+            repeats = H_q // H_kv
+            k_exp = k.repeat_interleave(repeats, dim=1)  # (B, H_q, L, D)
+            v_exp = v.repeat_interleave(repeats, dim=1)
+        else:
+            k_exp, v_exp = k, v
+
+        # Exact self-attention weight: w_self = exp(q·k_self * scale - LSE)
+        # q·k_self per position: sum over D of q[b,h,i,:] * k[b,h,i,:]
+        self_score = (q * k_exp).sum(-1) * scale  # (B, H_q, L)
+        self_weight = torch.exp(self_score - softmax_lse)  # (B, H_q, L)
+        self_weight = self_weight.clamp(max=1.0 - 1e-6)  # numerical safety
+
+        # Exact removal + renormalization
+        out_bhld = out.transpose(1, 2)  # (B, H_q, L, D)
+        v_self = v_exp  # (B, H_q, L, D) — value at self position
+        sw = self_weight.unsqueeze(-1)  # (B, H_q, L, 1)
+        y = (out_bhld - sw * v_self) / (1.0 - sw)
+        return y
+    else:
+        # Fallback: explicit mask (no Flash Attention, O(L²) memory)
+        seqlen = q.shape[2]
+        mask = torch.ones(seqlen, seqlen, device=q.device, dtype=torch.bool)
+        mask.fill_diagonal_(False)
+        return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, enable_gqa=gqa)
+
+
 class CausalSelfAttention(nn.Module):
     def __init__(
         self,
@@ -668,6 +729,7 @@ class CausalSelfAttention(nn.Module):
         self.proj = CastedLinear(dim, dim, bias=False)
         self.proj._zero_init = True
         self.q_gain = nn.Parameter(torch.full((num_heads,), qk_gain_init, dtype=torch.float32))
+        self.scale = self.head_dim ** -0.5
         self.rotary = Rotary(self.head_dim, base=rope_base)
 
     def forward(self, x: Tensor, attn_mode: str = "causal") -> Tensor:
@@ -683,10 +745,7 @@ class CausalSelfAttention(nn.Module):
         q = q * self.q_gain.to(dtype=q.dtype)[None, :, None, None]
         gqa = (self.num_kv_heads != self.num_heads)
         if attn_mode == "xsa_bidir":
-            # Bidirectional with self-attention excluded (diagonal = False)
-            mask = torch.ones(seqlen, seqlen, device=x.device, dtype=torch.bool)
-            mask.fill_diagonal_(False)
-            y = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, enable_gqa=gqa)
+            y = _xsa_bidir_attention(q, k, v, self.scale, gqa)
         elif attn_mode == "bidirectional":
             y = F.scaled_dot_product_attention(q, k, v, is_causal=False, enable_gqa=gqa)
         else:  # "causal"
