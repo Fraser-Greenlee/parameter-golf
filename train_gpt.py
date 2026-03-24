@@ -1118,8 +1118,9 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
-    # MDLM forward has dynamic masking and optional recursion; compile only forward_body
-    base_model.forward_body = torch.compile(base_model.forward_body, dynamic=False, fullgraph=True)
+    # MDLM forward has dynamic masking, string-based attn_mode dispatch, and explicit
+    # attention masks that are incompatible with fullgraph=True. Use default mode.
+    base_model.forward_body = torch.compile(base_model.forward_body)
     compiled_model = base_model
     model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
 
@@ -1255,7 +1256,9 @@ def main() -> None:
                     model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
                 x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                    warmup_loss = model(x, y)
+                    warmup_loss = model(x, y, mask_token_id=mask_token_id,
+                                        time_epsilon=args.mdlm_time_eps,
+                                        mdlm_loss_weight_type=args.mdlm_loss_weight)
                 (warmup_loss * grad_scale).backward()
             for opt in optimizers:
                 opt.step()
