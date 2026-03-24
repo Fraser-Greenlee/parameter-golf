@@ -1155,10 +1155,9 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
-    # torch.compile: set COMPILE=1 to enable. Off by default for MDLM (flash_attn
-    # external calls + graph breaks cause OOM during compilation warmup).
-    if bool(int(os.environ.get("COMPILE", "0"))):
-        base_model.forward_body = torch.compile(base_model.forward_body)
+    # Compile forward_body — bidirectional attention uses is_causal=False which is
+    # fully supported by torch.compile. Only xsa_bidir (flash_attn external) would break this.
+    base_model.forward_body = torch.compile(base_model.forward_body, dynamic=False)
     compiled_model = base_model
     model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
 
