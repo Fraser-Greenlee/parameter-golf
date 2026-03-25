@@ -263,9 +263,9 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 | MTP_N | MTP_LAMBDA | Steps | Step avg | Val BPB (s64) | Notes |
 |-------|------------|-------|----------|---------------|-------|
 | 2 | 0.1 | 6740 | 89.1ms | 1.1275 | +0.006 BPB vs E1. Small step-time overhead (~3ms) from extra head. MTP hurts — auxiliary loss competing with main NTP objective |
-| 2 | 0.3 | | | 1.1354 | Worse than λ=0.1. Higher MTP weight = more interference with main NTP loss |
-| 2 | 1.0 | | | 1.1546 | Much worse. MTP loss dominates training, main NTP quality degrades substantially |
-| 4 | 0.3 | | | 1.1395 | 3 auxiliary heads (t+2,t+3,t+4). Worse than n=2 λ=0.3. More heads = more interference, no benefit from longer-range prediction |
+| 2 | 0.3 | 6969 | 86.1ms | 1.1354 | Worse than λ=0.1. Higher MTP weight = more interference with main NTP loss |
+| 2 | 1.0 | 6960 | 86.2ms | 1.1546 | Much worse. MTP loss dominates training, main NTP quality degrades substantially |
+| 4 | 0.3 | 6627 | 90.6ms | 1.1395 | 3 auxiliary heads (t+2,t+3,t+4). ~4ms overhead from extra heads. Worse than n=2 at same λ |
 
 ---
 

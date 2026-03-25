@@ -31,4 +31,4 @@ echo "Config: $*"
     echo "---"
 } > "$LOGFILE"
 
-env "$@" torchrun --standalone --nproc_per_node=8 train_gpt.py 2>&1 | tee -a "$LOGFILE"
+env "$@" torchrun --standalone --nproc_per_node=8 train_gpt_lookahead.py 2>&1 | tee -a "$LOGFILE"
