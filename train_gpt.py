@@ -871,8 +871,8 @@ class GPT(nn.Module):
         x = F.rms_norm(x, (x.size(-1),))
         x = self.smear(x)
         x = self._body_from_embeds(x, token_ids_for_ve=interleaved_ids)
-        # Logits at real positions only
-        real_x = x[real_mask]  # [B*T, D]
+        # Logits at real positions only (even indices = real, odd = draft)
+        real_x = x[:, 0::2].contiguous().view(-1, x.size(-1))  # [B*T, D]
         if self.tie_embeddings:
             logits_proj = F.linear(real_x, self.tok_emb.weight)
         else:
@@ -880,8 +880,7 @@ class GPT(nn.Module):
         logits = self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
         main_loss = F.cross_entropy(logits.float(), target_ids.reshape(-1), reduction="mean")
         if aux_loss_weight > 0.0:
-            draft_mask = ~real_mask
-            draft_x = x[draft_mask]  # [B*T, D]
+            draft_x = x[:, 1::2].contiguous().view(-1, x.size(-1))  # [B*T, D]
             if self.tie_embeddings:
                 aux_proj = F.linear(draft_x, self.tok_emb.weight)
             else:
@@ -990,7 +989,7 @@ def construct_interleaved_batch(
     noise_dist = bigram_probs[x.long()]  # [B, T, V]
     gt_onehot = F.one_hot(y.long(), V).to(noise_dist.dtype)  # [B, T, V]
     draft_dist = (1.0 - alpha) * gt_onehot + alpha * noise_dist  # [B, T, V]
-    draft_embeds = draft_dist @ tok_emb.weight  # [B, T, D]
+    draft_embeds = draft_dist.to(tok_emb.weight.dtype) @ tok_emb.weight  # [B, T, D]
     draft_ids = draft_dist.argmax(dim=-1)  # [B, T]
     # Interleave: [x_0, d_1, x_1, d_2, ...]
     interleaved_embeds = torch.empty(B, 2 * T, D, device=x.device, dtype=real_embeds.dtype)
