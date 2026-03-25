@@ -192,18 +192,15 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 ---
 
 ### Curriculum: Late-Stage Lookahead (80/20)
-**What:** Train normally for 80% of wallclock, then enable lookahead + two-pass for the last 20%. Aims to preserve E1's single-pass quality while learning refinement.
-**Config:** `LOOKAHEAD_SMEAR=1 LOOKAHEAD_BIGRAM=0 TWOPASS_TRAIN_FRAC=0.1 LOOKAHEAD_START_FRAC=0.8 LEAKY_RELU_SLOPE=0.5 EVAL_PASSES=4`
+**What:** Train with prior always flowing through SmearGate (so gate_fwd gets gradients), but only enable two-pass training for the last 20% of wallclock. Aims to get same two-pass quality with less training disruption.
+**Config:** `LOOKAHEAD_SMEAR=1 LOOKAHEAD_BIGRAM=0 TWOPASS_TRAIN_FRAC=0.1 LOOKAHEAD_START_FRAC=0.8 LEAKY_RELU_SLOPE=0.5 EVAL_PASSES=2`
 
-| Metric | Value |
-|--------|-------|
-| Steps | 5714 |
-| Lookahead activated | step 5085 (480s/600s) |
-| Val BPB (single pass s64) | **1.1334** |
-| Val BPB (two-pass s64) | **1.1330** |
-| Val BPB (3-pass s64) | 1.1330 |
-| Val BPB (4-pass s64) | 1.1330 |
-| Notes | Failed. find_unused_parameters=True slowed ALL steps → only 5714 total (vs 6936 for E1). Only ~63 actual two-pass training steps. Two-pass gain negligible (-0.0004). Needs different approach (e.g. load lookahead weights mid-training, or don't include them in DDP until needed). |
+| Run | Steps | Step avg | Activated | 1-pass BPB | 2-pass BPB | Notes |
+|-----|-------|----------|-----------|------------|------------|-------|
+| v2 (find_unused) | 5714 | 105ms | step 5085 | 1.1334 | 1.1330 | Failed: DDP overhead killed step count |
+| **v3 (always prior)** | 6654 | 90.2ms | step 5596 | **1.1352** | **1.1237** | Works! Same 2-pass as full training. 1-pass still degraded vs E1 (1.1214) due to prior perturbation |
+
+**Findings:** Curriculum achieves same two-pass BPB (1.1237) as full-training (1.1236) with only ~106 two-pass steps. Single-pass degradation (+0.014 vs E1) from the prior embedding flowing through all steps — gate_fwd init at sigmoid(-3.0) ≈ 0.05 still perturbs training. Could try more negative init (e.g. -5.0 → sigmoid ≈ 0.007).
 
 ---
 
@@ -323,17 +320,8 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 
 ---
 
-### E13: GPTQ-lite Clip Search
-**What:** During int6 quantization, try multiple clip percentiles per row (0.999, 0.9995, 0.9999, 0.99999, 1.0) and pick the one that minimises MSE. This clips outlier weights before quantization, reducing round-trip error at zero training cost.
-**Config:** Post-training only — modify the quantization function to search over clip percentiles. Apply on top of best model.
-**Expected:** -0.0006 BPB based on the #2 submission. Zero training cost, negligible quantization-time overhead (5 candidates per row).
-**Why:** Free improvement. Used by the 1.1228 submission.
-
-| Metric | Value |
-|--------|-------|
-| Val BPB (before) | |
-| Val BPB (after GPTQ-lite) | |
-| Notes | |
+### ~~E13: GPTQ-lite Clip Search~~ (Already Implemented)
+**Status:** Already present in `train_gpt_lookahead.py` — `quantize_int6_per_row()` searches over 5 clip percentiles `[0.9990, 0.9995, 0.9999, 0.99999, 1.0]` and picks the one with lowest MSE. All experiments E0–E11 already used this. No action needed.
 
 ---
 

@@ -104,6 +104,17 @@ class Hyperparameters:
     twopass_train_frac = float(os.environ.get("TWOPASS_TRAIN_FRAC", 0.0))
     lookahead_start_frac = float(os.environ.get("LOOKAHEAD_START_FRAC", 0.0))
     eval_passes = int(os.environ.get("EVAL_PASSES", 1))
+    # --- TTT (test-time training) ---
+    ttt_enabled = bool(int(os.environ.get("TTT_ENABLED", "0")))
+    ttt_lr = float(os.environ.get("TTT_LR", 0.002))
+    ttt_epochs = int(os.environ.get("TTT_EPOCHS", 3))
+    ttt_chunk_tokens = int(os.environ.get("TTT_CHUNK_TOKENS", 32768))
+    ttt_freeze_blocks = int(os.environ.get("TTT_FREEZE_BLOCKS", 0))
+    ttt_momentum = float(os.environ.get("TTT_MOMENTUM", 0.9))
+    ttt_batch_seqs = int(os.environ.get("TTT_BATCH_SEQS", 32))
+    ttt_grad_clip = float(os.environ.get("TTT_GRAD_CLIP", 1.0))
+    # --- Eval temperature ---
+    eval_temperature = float(os.environ.get("EVAL_TEMPERATURE", 1.0))
 def zeropower_via_newtonschulz5(G: Tensor, steps: int = 10, eps: float = 1e-7) -> Tensor:
     a, b, c = (3.4445, -4.7750, 2.0315)
     X = G.bfloat16()
@@ -987,6 +998,8 @@ def eval_val_sliding(
                 y_batch[i, :wlen] = chunk[1:]
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 logits = compiled_logits(x_batch)
+            if args.eval_temperature != 1.0:
+                logits = logits / args.eval_temperature
             nll = F.cross_entropy(
                 logits.reshape(-1, logits.size(-1)).float(),
                 y_batch.reshape(-1),
@@ -1070,6 +1083,8 @@ def eval_val_sliding_lookahead(
                     if args.lookahead_bigram:
                         la_ids = logits.argmax(dim=-1)
                     logits = compiled_logits(x_batch, lookahead_emb=la_emb, lookahead_ids=la_ids)
+            if args.eval_temperature != 1.0:
+                logits = logits / args.eval_temperature
             nll = F.cross_entropy(
                 logits.reshape(-1, logits.size(-1)).float(),
                 y_batch.reshape(-1),
@@ -1191,6 +1206,8 @@ def eval_val_sliding_twopass(
                 logits_p2 = base_model.forward_logits_interleaved(interleaved, interleaved_ids)
             # Extract real-position logits (even positions)
             real_logits = logits_p2[:, 0::2, :]  # [B, T, V]
+            if args.eval_temperature != 1.0:
+                real_logits = real_logits / args.eval_temperature
             nll = F.cross_entropy(
                 real_logits.reshape(-1, real_logits.size(-1)).float(),
                 y_batch.reshape(-1),
@@ -1216,6 +1233,180 @@ def eval_val_sliding_twopass(
     tokens_per_byte = token_count.item() / byte_count.item()
     base_model.train()
     return val_loss, bits_per_token * tokens_per_byte
+
+def eval_val_sliding_ttt(
+    args: Hyperparameters, base_model: nn.Module, rank: int, world_size: int,
+    device: torch.device, val_tokens: Tensor, base_bytes_lut: Tensor,
+    has_leading_space_lut: Tensor, is_boundary_token_lut: Tensor,
+    stride: int, batch_seqs: int = 32, log0=print,
+    use_lookahead: bool = False,
+) -> tuple[float, float]:
+    """Legal score-first TTT: score each chunk with sliding windows,
+    then train on it. Every token scored BEFORE any update that could use it.
+    If use_lookahead=True, scoring uses multi-pass lookahead refinement."""
+    seq_len = args.train_seq_len
+    total_tokens = val_tokens.numel() - 1
+    ttt_chunk = args.ttt_chunk_tokens
+
+    window_starts = [ws for ws in range(0, total_tokens, stride)
+                     if min(ws + seq_len, total_tokens) - ws >= stride or ws == 0]
+
+    num_chunks = (total_tokens + ttt_chunk - 1) // ttt_chunk
+    chunk_windows: list[list[int]] = [[] for _ in range(num_chunks)]
+    for ws in window_starts:
+        end = min(ws + seq_len, total_tokens)
+        wlen = end - ws
+        s = 0 if ws == 0 else max(wlen - stride, 0)
+        scored_start = ws + s
+        ci = min(scored_start // ttt_chunk, num_chunks - 1)
+        chunk_windows[ci].append(ws)
+
+    la_mode = "lookahead" if use_lookahead else "single-pass"
+    log0(f"ttt_sliding:start chunks={num_chunks} chunk_tokens={ttt_chunk} "
+         f"total_windows={len(window_starts)} stride={stride} mode={la_mode} "
+         f"ttt_lr={args.ttt_lr} ttt_epochs={args.ttt_epochs} "
+         f"freeze_blocks={args.ttt_freeze_blocks}")
+
+    loss_sum = torch.zeros((), device=device, dtype=torch.float64)
+    token_count = torch.zeros((), device=device, dtype=torch.float64)
+    byte_count = torch.zeros((), device=device, dtype=torch.float64)
+
+    frozen_block_ids = set(range(min(args.ttt_freeze_blocks, len(base_model.blocks))))
+    ttt_params = []
+    for name, p in base_model.named_parameters():
+        freeze = False
+        for bi in frozen_block_ids:
+            if f"blocks.{bi}." in name:
+                freeze = True
+                break
+        if freeze:
+            p.requires_grad_(False)
+        else:
+            p.requires_grad_(True)
+            ttt_params.append(p)
+
+    log0(f"ttt_sliding:params unfrozen={sum(p.numel() for p in ttt_params)} "
+         f"frozen={sum(p.numel() for p in base_model.parameters() if not p.requires_grad)}")
+
+    optimizer = torch.optim.SGD(ttt_params, lr=args.ttt_lr, momentum=args.ttt_momentum)
+    t0 = time.perf_counter()
+
+    for ci in range(num_chunks):
+        windows = chunk_windows[ci]
+        if not windows:
+            continue
+
+        # --- Phase 1: SCORE this chunk's windows (inference_mode) ---
+        my_s = (len(windows) * rank) // world_size
+        my_e = (len(windows) * (rank + 1)) // world_size
+        my_windows = windows[my_s:my_e]
+
+        base_model.eval()
+        with torch.inference_mode():
+            for bi in range(0, len(my_windows), batch_seqs):
+                batch_ws = my_windows[bi:bi + batch_seqs]
+                bsz = len(batch_ws)
+                x_batch = torch.zeros(bsz, seq_len, dtype=torch.int64, device=device)
+                y_batch = torch.zeros(bsz, seq_len, dtype=torch.int64, device=device)
+                wlens: list[int] = []
+                for i, ws in enumerate(batch_ws):
+                    end = min(ws + seq_len, total_tokens)
+                    wlen = end - ws
+                    wlens.append(wlen)
+                    chunk_tok = val_tokens[ws:end + 1].to(dtype=torch.int64, device=device)
+                    x_batch[i, :wlen] = chunk_tok[:-1]
+                    y_batch[i, :wlen] = chunk_tok[1:]
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    if use_lookahead and args.lookahead_smear:
+                        # Multi-pass scoring: pass 1 → draft → pass 2
+                        logits = base_model.forward_logits(x_batch)
+                        for _ in range(args.eval_passes - 1):
+                            la_emb = None
+                            la_ids = None
+                            if args.lookahead_smear:
+                                probs = F.softmax(logits / max(args.draft_temp, 0.01), dim=-1)
+                                la_emb = probs @ base_model.tok_emb.weight
+                            if args.lookahead_bigram:
+                                la_ids = logits.argmax(dim=-1)
+                            logits = base_model.forward_logits(
+                                x_batch, lookahead_emb=la_emb, lookahead_ids=la_ids)
+                    else:
+                        logits = base_model.forward_logits(x_batch)
+                if args.eval_temperature != 1.0:
+                    logits = logits / args.eval_temperature
+                nll = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)).float(),
+                    y_batch.reshape(-1), reduction="none",
+                ).reshape(bsz, seq_len)
+                for i, ws in enumerate(batch_ws):
+                    wlen = wlens[i]
+                    s = 0 if ws == 0 else max(wlen - stride, 0)
+                    scored_nll = nll[i, s:wlen].to(torch.float64)
+                    loss_sum += scored_nll.sum()
+                    token_count += float(wlen - s)
+                    tgt, prev = y_batch[i, s:wlen], x_batch[i, s:wlen]
+                    tb = base_bytes_lut[tgt].to(torch.float64)
+                    tb += (has_leading_space_lut[tgt] & ~is_boundary_token_lut[prev]).to(torch.float64)
+                    byte_count += tb.sum()
+
+        # --- Phase 2: TRAIN on this chunk (already scored = legal) ---
+        is_last_chunk = (ci == num_chunks - 1)
+        if not is_last_chunk and args.ttt_epochs > 0:
+            base_model.train()
+            chunk_start = ci * ttt_chunk
+            chunk_end = min((ci + 1) * ttt_chunk, total_tokens)
+            chunk_seqs = (chunk_end - chunk_start) // seq_len
+            if chunk_seqs > 0:
+                cos_lr = args.ttt_lr * 0.5 * (1.0 + math.cos(math.pi * ci / max(num_chunks - 1, 1)))
+                for pg in optimizer.param_groups:
+                    pg['lr'] = cos_lr
+                my_seq_s = (chunk_seqs * rank) // world_size
+                my_seq_e = (chunk_seqs * (rank + 1)) // world_size
+                my_chunk_seqs = my_seq_e - my_seq_s
+                for _ep in range(args.ttt_epochs):
+                    for bs in range(0, my_chunk_seqs, args.ttt_batch_seqs):
+                        be = min(bs + args.ttt_batch_seqs, my_chunk_seqs)
+                        actual_bs = my_seq_s + bs
+                        start_tok = chunk_start + actual_bs * seq_len
+                        end_tok = chunk_start + (my_seq_s + be) * seq_len + 1
+                        if end_tok > val_tokens.numel():
+                            continue
+                        local = val_tokens[start_tok:end_tok].to(device=device, dtype=torch.int64)
+                        x = local[:-1].reshape(-1, seq_len)
+                        y = local[1:].reshape(-1, seq_len)
+                        optimizer.zero_grad(set_to_none=True)
+                        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                            loss = base_model(x, y)
+                        loss.backward()
+                        if world_size > 1:
+                            for p in ttt_params:
+                                if p.grad is not None:
+                                    dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+                        torch.nn.utils.clip_grad_norm_(ttt_params, args.ttt_grad_clip)
+                        optimizer.step()
+
+        if rank == 0 and (ci % 10 == 0 or ci == num_chunks - 1):
+            elapsed = time.perf_counter() - t0
+            rl = loss_sum.item() / max(token_count.item(), 1)
+            rbpb = rl / math.log(2.0) * (token_count.item() / max(byte_count.item(), 1)) if token_count.item() > 0 else 0.0
+            log0(f"  ttt_chunk [{ci+1}/{num_chunks}] bpb={rbpb:.6f} time={elapsed:.1f}s")
+
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(token_count, op=dist.ReduceOp.SUM)
+        dist.all_reduce(byte_count, op=dist.ReduceOp.SUM)
+
+    val_loss = (loss_sum / token_count).item()
+    val_bpb = val_loss / math.log(2.0) * (token_count.item() / byte_count.item())
+
+    for p in base_model.parameters():
+        p.requires_grad_(True)
+    base_model.eval()
+
+    log0(f"ttt_sliding:done mode={la_mode} val_loss={val_loss:.6f} val_bpb={val_bpb:.6f} "
+         f"elapsed={time.perf_counter() - t0:.1f}s")
+    return val_loss, val_bpb
+
 def _classify_param(name: str) -> str:
     if "tok_emb" in name or "lm_head" in name:
         return "embed"
@@ -1413,8 +1604,7 @@ def main() -> None:
             module.float()
     restore_low_dim_params_to_fp32(base_model)
     compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
-    _ddp_find_unused = (args.lookahead_smear or args.lookahead_bigram) and args.lookahead_start_frac > 0
-    model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False, find_unused_parameters=_ddp_find_unused) if distributed else compiled_model
+    model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
     block_named_params = list(base_model.blocks.named_parameters())
     matrix_params = [
         p
@@ -1714,13 +1904,14 @@ def main() -> None:
                                  aux_loss_weight=args.draft_aux_loss_weight)
             else:
                 x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
-                # Lookahead curriculum: disabled before start_frac of wallclock, then prior + two-pass
+                # Always pass prior so all params get gradients (single compiled graph).
+                # Curriculum only gates when two-pass training starts.
                 _lookahead_active = _lookahead_enabled and (args.lookahead_start_frac <= 0 or (max_wallclock_ms is not None and elapsed_ms >= max_wallclock_ms * args.lookahead_start_frac))
                 if _lookahead_active and not _lookahead_was_active:
                     _lookahead_was_active = True
                     log0(f"lookahead:activated step:{step} elapsed:{elapsed_ms:.0f}ms")
-                la_emb = _prior_lookahead_emb if _lookahead_active and args.lookahead_smear else None
-                la_ids = _prior_lookahead_ids if _lookahead_active and args.lookahead_bigram else None
+                la_emb = _prior_lookahead_emb if _lookahead_enabled and args.lookahead_smear else None
+                la_ids = _prior_lookahead_ids if _lookahead_enabled and args.lookahead_bigram else None
                 if _do_lookahead_twopass and _lookahead_active and random.random() < args.twopass_train_frac:
                     with torch.no_grad():
                         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
@@ -1944,6 +2135,39 @@ def main() -> None:
         log0(f"final_twopass_exact val_loss:{tp_val_loss:.8f} val_bpb:{tp_val_bpb:.8f}")
         if _wandb:
             _wandb.log({"final/twopass_bpb": tp_val_bpb, "final/twopass_loss": tp_val_loss})
+    # TTT evaluation
+    if args.ttt_enabled and args.eval_stride > 0:
+        # Single-pass TTT
+        torch.cuda.synchronize()
+        t_ttt = time.perf_counter()
+        ttt_loss, ttt_bpb = eval_val_sliding_ttt(
+            args, eval_model, rank, world_size, device,
+            val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
+            stride=args.eval_stride, log0=log0, use_lookahead=False,
+        )
+        torch.cuda.synchronize()
+        log0(f"legal_ttt val_loss:{ttt_loss:.4f} val_bpb:{ttt_bpb:.4f} "
+             f"eval_time:{1000.0 * (time.perf_counter() - t_ttt):.0f}ms")
+        log0(f"legal_ttt_exact val_loss:{ttt_loss:.8f} val_bpb:{ttt_bpb:.8f}")
+        if _wandb:
+            _wandb.log({"final/ttt_bpb": ttt_bpb, "final/ttt_loss": ttt_loss})
+        # Multi-pass TTT (if lookahead enabled)
+        if args.lookahead_smear and args.eval_passes > 1:
+            # Reload quantized weights (TTT mutated them)
+            eval_model.load_state_dict(deq_state, strict=False)
+            torch.cuda.synchronize()
+            t_ttt_la = time.perf_counter()
+            ttt_la_loss, ttt_la_bpb = eval_val_sliding_ttt(
+                args, eval_model, rank, world_size, device,
+                val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
+                stride=args.eval_stride, log0=log0, use_lookahead=True,
+            )
+            torch.cuda.synchronize()
+            log0(f"legal_ttt_lookahead val_loss:{ttt_la_loss:.4f} val_bpb:{ttt_la_bpb:.4f} "
+                 f"eval_time:{1000.0 * (time.perf_counter() - t_ttt_la):.0f}ms")
+            log0(f"legal_ttt_lookahead_exact val_loss:{ttt_la_loss:.8f} val_bpb:{ttt_la_bpb:.8f}")
+            if _wandb:
+                _wandb.log({"final/ttt_lookahead_bpb": ttt_la_bpb, "final/ttt_lookahead_loss": ttt_la_loss})
     # W&B final logging
     if _wandb:
         _wandb.log({
