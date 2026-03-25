@@ -1440,9 +1440,18 @@ def main() -> None:
             for micro_step in range(grad_accum_steps):
                 if distributed:
                     model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
-                x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                    warmup_loss = model(x, y)
+                if args.draft_enabled:
+                    x, y = train_loader.next_batch(args.train_batch_tokens, draft_real_seq_len, grad_accum_steps)
+                    embeds, ids, targets, real_mask = construct_interleaved_batch(
+                        x, y, base_model.tok_emb, bigram_probs, 0.0,
+                        base_model.draft_type_emb, base_model.real_type_emb)
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                        warmup_loss = model(x, targets, interleaved_embeds=embeds,
+                                            interleaved_ids=ids, real_mask=real_mask)
+                else:
+                    x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                        warmup_loss = model(x, y)
                 (warmup_loss * grad_scale).backward()
             for opt in optimizers:
                 opt.step()
