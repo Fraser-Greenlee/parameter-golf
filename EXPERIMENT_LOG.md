@@ -166,17 +166,44 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 
 ### TWOPASS_TRAIN_FRAC Sweep
 **What:** Sweep the fraction of steps that use two-pass self-refinement training.
+
+#### Smear+Bigram (from E2)
 **Config:** `LOOKAHEAD_SMEAR=1 LOOKAHEAD_BIGRAM=1` with varying `TWOPASS_TRAIN_FRAC`
 
-| Frac | Steps | Step avg | 1-pass BPB | 2-pass BPB | Notes |
-|------|-------|----------|------------|------------|-------|
-| 0.02 | 6548 | 91.6ms | 1.2035 | 1.1336 | Single-pass badly degraded |
-| 0.05 | 6421 | 93.4ms | — | — | **Invalid: concurrent run clobbered checkpoint** |
-| 0.10 | 6540 | 91.8ms | 1.1383 | **1.1265** | (= E2 result) |
-| 0.20 | 6231 | 96.4ms | — | — | **Invalid: concurrent run clobbered checkpoint** |
-| 0.50 | 5745 | 104.5ms | 1.1611 | 1.1310 | Too many two-pass steps, fewer total steps |
+| Frac | Steps | 1-pass BPB | 2-pass BPB | Notes |
+|------|-------|------------|------------|-------|
+| 0.02 | 6548 | 1.2035 | 1.1336 | Single-pass badly degraded |
+| 0.05 | 6656 | 1.1453 | 1.1264 | |
+| 0.10 | 6540 | 1.1383 | 1.1265 | (= E2) |
+| 0.20 | 6353 | 1.1368 | 1.1265 | |
+| 0.50 | 5745 | 1.1611 | 1.1310 | Too many two-pass steps |
 
-**Note:** frac=0.05 and 0.20 produced identical eval results due to concurrent runs overwriting `final_model.pt`. Fixed by adding run-ID to model filenames. Rerun needed.
+#### Smear-only + LeakyReLU (best config)
+**Config:** `LOOKAHEAD_SMEAR=1 LOOKAHEAD_BIGRAM=0 LEAKY_RELU_SLOPE=0.5` with varying frac + 4-pass eval
+
+| Frac | Steps | 1-pass BPB | 2-pass BPB | 3-pass | 4-pass | Notes |
+|------|-------|------------|------------|--------|--------|-------|
+| 0.05 | 6603 | 1.1334 | **1.1236** | 1.1236 | 1.1236 | Best overall two-pass BPB |
+| 0.10 | 6523 | 1.1372 | 1.1249 | — | — | |
+| 0.15 | 6437 | 1.1357 | 1.1251 | 1.1251 | 1.1251 | |
+
+**Findings:** frac=0.05 optimal. Two-pass converges immediately — passes 3+ give zero additional gain. Two-pass BPB stable across 0.05–0.20 range.
+
+---
+
+### Curriculum: Late-Stage Lookahead (80/20)
+**What:** Train normally for 80% of wallclock, then enable lookahead + two-pass for the last 20%. Aims to preserve E1's single-pass quality while learning refinement.
+**Config:** `LOOKAHEAD_SMEAR=1 LOOKAHEAD_BIGRAM=0 TWOPASS_TRAIN_FRAC=0.1 LOOKAHEAD_START_FRAC=0.8 LEAKY_RELU_SLOPE=0.5 EVAL_PASSES=4`
+
+| Metric | Value |
+|--------|-------|
+| Steps | 5714 |
+| Lookahead activated | step 5085 (480s/600s) |
+| Val BPB (single pass s64) | **1.1334** |
+| Val BPB (two-pass s64) | **1.1330** |
+| Val BPB (3-pass s64) | 1.1330 |
+| Val BPB (4-pass s64) | 1.1330 |
+| Notes | Failed. find_unused_parameters=True slowed ALL steps → only 5714 total (vs 6936 for E1). Only ~63 actual two-pass training steps. Two-pass gain negligible (-0.0004). Needs different approach (e.g. load lookahead weights mid-training, or don't include them in DDP until needed). |
 
 ---
 
@@ -278,6 +305,52 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 5. **Does non-uniform FFN allocation help at fixed param count?** E10 diamond vs uniform baseline. Does torch.compile handle it without step-time regression?
 6. **Does MTP help at V=1024, and does larger n help more?** E11 n=4 vs n=2. The byte-level literature predicts yes; step-time cost is the constraint.
 7. **Do orthogonal techniques stack?** Best of {E2–E4} + best of {E10} + best of {E11} + E1 LeakyReLU.
+
+---
+
+### E12: Legal Score-First Test-Time Training (TTT)
+**What:** At eval time, adapt the model on already-scored validation chunks before scoring subsequent chunks. Protocol: split val set into non-overlapping 32K-token chunks. For each chunk: SCORE under `torch.inference_mode()` first, then TRAIN on that chunk (SGD, lr=0.002, momentum=0.9, 3 epochs, all blocks unfrozen). Chunk N is scored by the model adapted on chunks 0..N-1.
+**Config:** Eval-time only — no training changes. Apply on top of best model (E1 or best lookahead config).
+**Expected:** -0.0025 BPB based on the SOTA submission (1.1218 pre-TTT → 1.1194 post-TTT). ~410s eval time, well within the 10-min eval budget.
+**Why:** Proven technique used by the current #1 submission. Stacks on top of any model quality.
+
+| Metric | Value |
+|--------|-------|
+| Pre-TTT BPB | |
+| Post-TTT BPB | |
+| Eval time | |
+| Notes | |
+
+---
+
+### E13: GPTQ-lite Clip Search
+**What:** During int6 quantization, try multiple clip percentiles per row (0.999, 0.9995, 0.9999, 0.99999, 1.0) and pick the one that minimises MSE. This clips outlier weights before quantization, reducing round-trip error at zero training cost.
+**Config:** Post-training only — modify the quantization function to search over clip percentiles. Apply on top of best model.
+**Expected:** -0.0006 BPB based on the #2 submission. Zero training cost, negligible quantization-time overhead (5 candidates per row).
+**Why:** Free improvement. Used by the 1.1228 submission.
+
+| Metric | Value |
+|--------|-------|
+| Val BPB (before) | |
+| Val BPB (after GPTQ-lite) | |
+| Notes | |
+
+---
+
+### E14: Temperature Scaling at Eval
+**What:** Grid search over logit temperature T at eval time. Divide logits by T before softmax. Tests whether the model's predictions are miscalibrated.
+**Config:** Eval-time only. Sweep T in {0.85, 0.90, 0.95, 1.0, 1.05, 1.10}. Note: model uses logit softcapping (tanh, cap=30) which may already handle calibration.
+**Expected:** Up to -0.005 BPB if miscalibrated, but may be negligible given softcap. The ternary submission found T=0.90 optimal for relu².
+**Why:** Zero-cost eval-time search. Quick to test.
+
+| T | Val BPB (s64) | Notes |
+|---|---------------|-------|
+| 0.85 | | |
+| 0.90 | | |
+| 0.95 | | |
+| 1.00 | | baseline |
+| 1.05 | | |
+| 1.10 | | |
 
 ---
 

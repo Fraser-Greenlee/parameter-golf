@@ -102,6 +102,7 @@ class Hyperparameters:
     lookahead_smear = bool(int(os.environ.get("LOOKAHEAD_SMEAR", "0")))
     lookahead_bigram = bool(int(os.environ.get("LOOKAHEAD_BIGRAM", "0")))
     twopass_train_frac = float(os.environ.get("TWOPASS_TRAIN_FRAC", 0.0))
+    lookahead_start_frac = float(os.environ.get("LOOKAHEAD_START_FRAC", 0.0))
     eval_passes = int(os.environ.get("EVAL_PASSES", 1))
 def zeropower_via_newtonschulz5(G: Tensor, steps: int = 10, eps: float = 1e-7) -> Tensor:
     a, b, c = (3.4445, -4.7750, 2.0315)
@@ -1314,6 +1315,14 @@ def main() -> None:
     torch.cuda.set_device(device)
     if distributed:
         dist.init_process_group(backend="nccl", device_id=device)
+        # Broadcast run_id from rank 0 so all ranks use the same model filenames
+        if rank == 0:
+            _rid_bytes = args.run_id.encode("utf-8")
+            _rid_tensor = torch.tensor(list(_rid_bytes), dtype=torch.uint8, device=device)
+        else:
+            _rid_tensor = torch.zeros(36, dtype=torch.uint8, device=device)
+        dist.broadcast(_rid_tensor, src=0)
+        args.run_id = bytes(_rid_tensor.cpu().tolist()).decode("utf-8")
         dist.barrier()
     master_process = rank == 0
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -1404,7 +1413,8 @@ def main() -> None:
             module.float()
     restore_low_dim_params_to_fp32(base_model)
     compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
-    model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
+    _ddp_find_unused = (args.lookahead_smear or args.lookahead_bigram) and args.lookahead_start_frac > 0
+    model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False, find_unused_parameters=_ddp_find_unused) if distributed else compiled_model
     block_named_params = list(base_model.blocks.named_parameters())
     matrix_params = [
         p
@@ -1505,7 +1515,8 @@ def main() -> None:
         log0(f"leaky_relu_slope:{args.leaky_relu_slope}")
     if args.lookahead_smear or args.lookahead_bigram:
         log0(f"lookahead:smear={args.lookahead_smear} bigram={args.lookahead_bigram} "
-             f"twopass_frac={args.twopass_train_frac} eval_passes={args.eval_passes} temp={args.draft_temp}")
+             f"twopass_frac={args.twopass_train_frac} start_frac={args.lookahead_start_frac} "
+             f"eval_passes={args.eval_passes} temp={args.draft_temp}")
     # --- W&B init ---
     _wandb = None
     if master_process and args.wandb_project:
@@ -1538,6 +1549,7 @@ def main() -> None:
                 "lookahead_smear": args.lookahead_smear,
                 "lookahead_bigram": args.lookahead_bigram,
                 "twopass_train_frac": args.twopass_train_frac,
+                "lookahead_start_frac": args.lookahead_start_frac,
                 "eval_passes": args.eval_passes,
                 "n_params": n_params, "seed": args.seed,
             },
@@ -1638,6 +1650,7 @@ def main() -> None:
     ema_decay = 0.997
     training_time_ms = 0.0
     stop_after_step: int | None = None
+    _lookahead_was_active = args.lookahead_start_frac <= 0 and _lookahead_enabled
     torch.cuda.synchronize()
     t0 = time.perf_counter()
     step = 0
@@ -1701,11 +1714,14 @@ def main() -> None:
                                  aux_loss_weight=args.draft_aux_loss_weight)
             else:
                 x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
-                # Compute lookahead: prior (cheap) or real predictions (two-pass)
-                # Lookahead: start with prior, optionally refine via two-pass
-                la_emb = _prior_lookahead_emb if _lookahead_enabled and args.lookahead_smear else None
-                la_ids = _prior_lookahead_ids if _lookahead_enabled and args.lookahead_bigram else None
-                if _do_lookahead_twopass and random.random() < args.twopass_train_frac:
+                # Lookahead curriculum: disabled before start_frac of wallclock, then prior + two-pass
+                _lookahead_active = _lookahead_enabled and (args.lookahead_start_frac <= 0 or (max_wallclock_ms is not None and elapsed_ms >= max_wallclock_ms * args.lookahead_start_frac))
+                if _lookahead_active and not _lookahead_was_active:
+                    _lookahead_was_active = True
+                    log0(f"lookahead:activated step:{step} elapsed:{elapsed_ms:.0f}ms")
+                la_emb = _prior_lookahead_emb if _lookahead_active and args.lookahead_smear else None
+                la_ids = _prior_lookahead_ids if _lookahead_active and args.lookahead_bigram else None
+                if _do_lookahead_twopass and _lookahead_active and random.random() < args.twopass_train_frac:
                     with torch.no_grad():
                         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                             draft_logits = compiled_fwd_logits_train(x, lookahead_emb=la_emb, lookahead_ids=la_ids).detach()
