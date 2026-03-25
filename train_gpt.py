@@ -98,6 +98,11 @@ class Hyperparameters:
     draft_train_seq_len = int(os.environ.get("DRAFT_TRAIN_SEQ_LEN", 0))  # 0 = train_seq_len // 2
     leaky_relu_slope = float(os.environ.get("LEAKY_RELU_SLOPE", 0.0))  # 0 = standard relu²
     eval_two_pass = bool(int(os.environ.get("EVAL_TWO_PASS", "0")))
+    # --- Lookahead features ---
+    lookahead_smear = bool(int(os.environ.get("LOOKAHEAD_SMEAR", "0")))
+    lookahead_bigram = bool(int(os.environ.get("LOOKAHEAD_BIGRAM", "0")))
+    twopass_train_frac = float(os.environ.get("TWOPASS_TRAIN_FRAC", 0.0))
+    eval_passes = int(os.environ.get("EVAL_PASSES", 1))
 def zeropower_via_newtonschulz5(G: Tensor, steps: int = 10, eps: float = 1e-7) -> Tensor:
     a, b, c = (3.4445, -4.7750, 2.0315)
     X = G.bfloat16()
@@ -257,7 +262,7 @@ CONTROL_TENSOR_NAME_PATTERNS = tuple(
     pattern
     for pattern in os.environ.get(
         "CONTROL_TENSOR_NAME_PATTERNS",
-        "attn_scale,attn_scales,mlp_scale,mlp_scales,resid_mix,resid_mixes,q_gain,skip_weight,skip_weights,smear,dtg_gate,ve_layer_scales,ve_shared.scale,draft_type_emb,real_type_emb",
+        "attn_scale,attn_scales,mlp_scale,mlp_scales,resid_mix,resid_mixes,q_gain,skip_weight,skip_weights,smear,dtg_gate,ve_layer_scales,ve_shared.scale,draft_type_emb,real_type_emb,gate_fwd,scale_fwd",
     ).split(",")
     if pattern
 )
@@ -544,15 +549,22 @@ class CausalSelfAttention(nn.Module):
         y = y.reshape(bsz, seqlen, dim)
         return self.proj(y)
 class SmearGate(nn.Module):
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, lookahead: bool = False):
         super().__init__()
         self.gate = nn.Parameter(torch.zeros(dim, dtype=torch.float32))
-    def forward(self, x: Tensor) -> Tensor:
+        if lookahead:
+            self.gate_fwd = nn.Parameter(torch.full((dim,), -3.0, dtype=torch.float32))
+    def forward(self, x: Tensor, lookahead_emb: Tensor | None = None) -> Tensor:
         g = torch.sigmoid(self.gate.to(dtype=x.dtype))[None, None, :]
         x_prev = torch.cat([torch.zeros_like(x[:, :1]), x[:, :-1]], dim=1)
-        return (1 - g) * x + g * x_prev
+        out = (1 - g) * x + g * x_prev
+        if hasattr(self, 'gate_fwd') and lookahead_emb is not None:
+            g_fwd = torch.sigmoid(self.gate_fwd.to(dtype=x.dtype))[None, None, :]
+            out = (1 - g_fwd) * out + g_fwd * lookahead_emb
+        return out
 class BigramHashEmbedding(nn.Module):
-    def __init__(self, bigram_vocab_size: int, bigram_dim: int, model_dim: int):
+    def __init__(self, bigram_vocab_size: int, bigram_dim: int, model_dim: int,
+                 lookahead: bool = False):
         super().__init__()
         self.bigram_vocab_size = bigram_vocab_size
         self.embed = nn.Embedding(bigram_vocab_size, bigram_dim)
@@ -561,6 +573,13 @@ class BigramHashEmbedding(nn.Module):
         if self.proj is not None:
             nn.init.zeros_(self.proj.weight)
         self.scale = nn.Parameter(torch.tensor(0.05, dtype=torch.float32))
+        if lookahead:
+            self.embed_fwd = nn.Embedding(bigram_vocab_size, bigram_dim)
+            nn.init.zeros_(self.embed_fwd.weight)
+            self.proj_fwd = CastedLinear(bigram_dim, model_dim, bias=False) if bigram_dim != model_dim else None
+            if self.proj_fwd is not None:
+                nn.init.zeros_(self.proj_fwd.weight)
+            self.scale_fwd = nn.Parameter(torch.tensor(0.01, dtype=torch.float32))
     def bigram_hash(self, tokens: Tensor) -> Tensor:
         t = tokens.to(torch.int32)
         mod = self.bigram_vocab_size - 1
@@ -568,11 +587,22 @@ class BigramHashEmbedding(nn.Module):
         out[..., 0] = mod
         out[..., 1:] = torch.bitwise_xor(36313 * t[..., 1:], 27191 * t[..., :-1]) % mod
         return out.long()
-    def forward(self, token_ids: Tensor) -> Tensor:
+    def bigram_hash_fwd(self, tokens: Tensor, next_tokens: Tensor) -> Tensor:
+        t = tokens.to(torch.int32)
+        n = next_tokens.to(torch.int32)
+        mod = self.bigram_vocab_size - 1
+        return (torch.bitwise_xor(48271 * t, 31547 * n) % mod).long()
+    def forward(self, token_ids: Tensor, lookahead_ids: Tensor | None = None) -> Tensor:
         h = self.embed(self.bigram_hash(token_ids))
         if self.proj is not None:
             h = self.proj(h)
-        return h * self.scale.to(dtype=h.dtype)
+        result = h * self.scale.to(dtype=h.dtype)
+        if hasattr(self, 'embed_fwd') and lookahead_ids is not None:
+            h_fwd = self.embed_fwd(self.bigram_hash_fwd(token_ids, lookahead_ids))
+            if self.proj_fwd is not None:
+                h_fwd = self.proj_fwd(h_fwd)
+            result = result + h_fwd * self.scale_fwd.to(dtype=h_fwd.dtype)
+        return result
 class ValueEmbedding(nn.Module):
     """Reinject token identity into attention values at specific layers.
     Each table maps vocab tokens to a low-dim embedding, projected to model_dim."""
@@ -669,6 +699,9 @@ class GPT(nn.Module):
         ve_layers: str = "9,10",
         leaky_relu_slope: float = 0.0,
         draft_enabled: bool = False,
+        lookahead_smear: bool = False,
+        lookahead_bigram: bool = False,
+        draft_temp: float = 1.0,
     ):
         super().__init__()
         self._ve_target_dim = num_kv_heads * (model_dim // num_heads)  # kv_dim for value projection
@@ -677,11 +710,14 @@ class GPT(nn.Module):
         self.tie_embeddings = tie_embeddings
         self.tied_embed_init_std = tied_embed_init_std
         self.logit_softcap = logit_softcap
+        self.lookahead_smear = lookahead_smear
+        self.lookahead_bigram = lookahead_bigram
+        self.draft_temp = draft_temp
         self.mtp_num_heads = mtp_num_heads
         self.mtp_loss_weight = mtp_loss_weight
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
-        self.bigram = BigramHashEmbedding(bigram_vocab_size, bigram_dim, model_dim) if bigram_vocab_size > 0 else None
-        self.smear = SmearGate(model_dim)
+        self.bigram = BigramHashEmbedding(bigram_vocab_size, bigram_dim, model_dim, lookahead=lookahead_bigram) if bigram_vocab_size > 0 else None
+        self.smear = SmearGate(model_dim, lookahead=lookahead_smear)
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
         self.num_skip_weights = min(self.num_encoder_layers, self.num_decoder_layers)
@@ -762,16 +798,18 @@ class GPT(nn.Module):
                 interleaved_embeds: Tensor | None = None,
                 interleaved_ids: Tensor | None = None,
                 real_mask: Tensor | None = None,
-                aux_loss_weight: float = 0.0) -> Tensor:
+                aux_loss_weight: float = 0.0,
+                lookahead_emb: Tensor | None = None,
+                lookahead_ids: Tensor | None = None) -> Tensor:
         # Dispatch to interleaved path if embeddings are provided
         if interleaved_embeds is not None:
             return self.forward_interleaved(interleaved_embeds, interleaved_ids,
                                             target_ids, real_mask, aux_loss_weight)
         x = self.tok_emb(input_ids)
         if self.bigram is not None:
-            x = x + self.bigram(input_ids)
+            x = x + self.bigram(input_ids, lookahead_ids=lookahead_ids)
         x = F.rms_norm(x, (x.size(-1),))
-        x = self.smear(x)
+        x = self.smear(x, lookahead_emb=lookahead_emb)
         x0 = x
         skips: list[Tensor] = []
         ve_cache: dict = {}
@@ -813,13 +851,15 @@ class GPT(nn.Module):
             if mtp_loss_count > 0:
                 main_loss = main_loss + self.mtp_loss_weight * (mtp_loss_sum / mtp_loss_count)
         return main_loss
-    def forward_logits(self, input_ids: Tensor) -> Tensor:
+    def forward_logits(self, input_ids: Tensor,
+                       lookahead_emb: Tensor | None = None,
+                       lookahead_ids: Tensor | None = None) -> Tensor:
         """Return logits (bsz, seq_len, vocab) without computing loss."""
         x = self.tok_emb(input_ids)
         if self.bigram is not None:
-            x = x + self.bigram(input_ids)
+            x = x + self.bigram(input_ids, lookahead_ids=lookahead_ids)
         x = F.rms_norm(x, (x.size(-1),))
-        x = self.smear(x)
+        x = self.smear(x, lookahead_emb=lookahead_emb)
         x0 = x
         skips: list[Tensor] = []
         ve_cache: dict = {}
@@ -946,6 +986,89 @@ def eval_val_sliding(
                 y_batch[i, :wlen] = chunk[1:]
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 logits = compiled_logits(x_batch)
+            nll = F.cross_entropy(
+                logits.reshape(-1, logits.size(-1)).float(),
+                y_batch.reshape(-1),
+                reduction="none",
+            ).reshape(bsz, seq_len)
+            for i, ws in enumerate(batch_ws):
+                wlen = wlens[i]
+                s = 0 if ws == 0 else max(wlen - stride, 0)
+                scored_nll = nll[i, s:wlen].to(torch.float64)
+                loss_sum += scored_nll.sum()
+                token_count += float(wlen - s)
+                tgt = y_batch[i, s:wlen]
+                prev = x_batch[i, s:wlen]
+                tb = base_bytes_lut[tgt].to(torch.float64)
+                tb += (has_leading_space_lut[tgt] & ~is_boundary_token_lut[prev]).to(torch.float64)
+                byte_count += tb.sum()
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(token_count, op=dist.ReduceOp.SUM)
+        dist.all_reduce(byte_count, op=dist.ReduceOp.SUM)
+    val_loss = (loss_sum / token_count).item()
+    bits_per_token = val_loss / math.log(2.0)
+    tokens_per_byte = token_count.item() / byte_count.item()
+    base_model.train()
+    return val_loss, bits_per_token * tokens_per_byte
+def eval_val_sliding_lookahead(
+    args: "Hyperparameters",
+    base_model: nn.Module,
+    rank: int,
+    world_size: int,
+    device: torch.device,
+    val_tokens: Tensor,
+    base_bytes_lut: Tensor,
+    has_leading_space_lut: Tensor,
+    is_boundary_token_lut: Tensor,
+    stride: int,
+    num_passes: int = 2,
+    batch_seqs: int = 32,
+    eval_seq_len: int | None = None,
+) -> tuple[float, float]:
+    """Multi-pass sliding window eval: each pass feeds predictions into SmearGate/BigramHash lookahead."""
+    seq_len = eval_seq_len or args.train_seq_len
+    total_tokens = val_tokens.numel() - 1
+    window_starts = [ws for ws in range(0, total_tokens, stride)
+                     if min(ws + seq_len, total_tokens) - ws >= 1]
+    total_windows = len(window_starts)
+    my_s = (total_windows * rank) // world_size
+    my_e = (total_windows * (rank + 1)) // world_size
+    my_windows = window_starts[my_s:my_e]
+    loss_sum = torch.zeros((), device=device, dtype=torch.float64)
+    token_count = torch.zeros((), device=device, dtype=torch.float64)
+    byte_count = torch.zeros((), device=device, dtype=torch.float64)
+    base_model.eval()
+    compiled_logits = torch.compile(base_model.forward_logits, dynamic=False, fullgraph=True)
+    with torch.inference_mode():
+        for bi in range(0, len(my_windows), batch_seqs):
+            batch_ws = my_windows[bi:bi + batch_seqs]
+            bsz = len(batch_ws)
+            x_batch = torch.zeros(bsz, seq_len, dtype=torch.int64, device=device)
+            y_batch = torch.zeros(bsz, seq_len, dtype=torch.int64, device=device)
+            wlens: list[int] = []
+            for i, ws in enumerate(batch_ws):
+                end = min(ws + seq_len, total_tokens)
+                wlen = end - ws
+                wlens.append(wlen)
+                chunk = val_tokens[ws:end + 1].to(dtype=torch.int64, device=device)
+                x_batch[i, :wlen] = chunk[:-1]
+                y_batch[i, :wlen] = chunk[1:]
+            # Multi-pass: pass 1 with prior, passes 2+ with real predictions
+            prior_emb = base_model.tok_emb.weight.mean(dim=0).to(dtype=torch.bfloat16)
+            prior_emb = prior_emb.expand(bsz, seq_len, -1)
+            prior_ids = torch.zeros(bsz, seq_len, dtype=torch.long, device=device)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                la_emb = prior_emb if args.lookahead_smear else None
+                la_ids = prior_ids if args.lookahead_bigram else None
+                logits = compiled_logits(x_batch, lookahead_emb=la_emb, lookahead_ids=la_ids)
+                for _ in range(num_passes - 1):
+                    if args.lookahead_smear:
+                        probs = F.softmax(logits / max(args.draft_temp, 0.01), dim=-1)
+                        la_emb = probs @ base_model.tok_emb.weight
+                    if args.lookahead_bigram:
+                        la_ids = logits.argmax(dim=-1)
+                    logits = compiled_logits(x_batch, lookahead_emb=la_emb, lookahead_ids=la_ids)
             nll = F.cross_entropy(
                 logits.reshape(-1, logits.size(-1)).float(),
                 y_batch.reshape(-1),
@@ -1270,7 +1393,12 @@ def main() -> None:
         ve_layers=args.ve_layers,
         leaky_relu_slope=args.leaky_relu_slope,
         draft_enabled=args.draft_enabled,
+        lookahead_smear=args.lookahead_smear,
+        lookahead_bigram=args.lookahead_bigram,
+        draft_temp=args.draft_temp,
     ).to(device).bfloat16()
+    if args.draft_enabled and (args.lookahead_smear or args.lookahead_bigram):
+        raise ValueError("Cannot combine draft_enabled (interleaved) with lookahead features.")
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
             module.float()
@@ -1293,6 +1421,8 @@ def main() -> None:
     if base_model.skip_weights.numel() > 0:
         scalar_params.append(base_model.skip_weights)
     scalar_params.append(base_model.smear.gate)
+    if hasattr(base_model.smear, 'gate_fwd'):
+        scalar_params.append(base_model.smear.gate_fwd)
     if base_model.bigram is not None:
         scalar_params.append(base_model.bigram.scale)
     if args.draft_enabled:
@@ -1304,6 +1434,11 @@ def main() -> None:
         tok_params.append({"params": [base_model.bigram.embed.weight], "lr": token_lr, "base_lr": token_lr})
         if base_model.bigram.proj is not None:
             matrix_params.append(base_model.bigram.proj.weight)
+        if hasattr(base_model.bigram, 'embed_fwd'):
+            tok_params.append({"params": [base_model.bigram.embed_fwd.weight], "lr": token_lr, "base_lr": token_lr})
+            if base_model.bigram.proj_fwd is not None:
+                matrix_params.append(base_model.bigram.proj_fwd.weight)
+            scalar_params.append(base_model.bigram.scale_fwd)
     if base_model.ve_shared is not None:
         tok_params.append({"params": [base_model.ve_shared.embed.weight], "lr": token_lr, "base_lr": token_lr})
         if base_model.ve_shared.proj is not None:
@@ -1368,6 +1503,9 @@ def main() -> None:
              f"warmup_frac={args.draft_alpha_warmup_frac} temp={args.draft_temp}")
     if args.leaky_relu_slope > 0:
         log0(f"leaky_relu_slope:{args.leaky_relu_slope}")
+    if args.lookahead_smear or args.lookahead_bigram:
+        log0(f"lookahead:smear={args.lookahead_smear} bigram={args.lookahead_bigram} "
+             f"twopass_frac={args.twopass_train_frac} eval_passes={args.eval_passes} temp={args.draft_temp}")
     # --- W&B init ---
     _wandb = None
     if master_process and args.wandb_project:
@@ -1397,6 +1535,10 @@ def main() -> None:
                 "draft_exposure_frac": args.draft_exposure_frac,
                 "leaky_relu_slope": args.leaky_relu_slope,
                 "eval_two_pass": args.eval_two_pass,
+                "lookahead_smear": args.lookahead_smear,
+                "lookahead_bigram": args.lookahead_bigram,
+                "twopass_train_frac": args.twopass_train_frac,
+                "eval_passes": args.eval_passes,
                 "n_params": n_params, "seed": args.seed,
             },
         )
@@ -1430,6 +1572,30 @@ def main() -> None:
         warmdown_ms = args.warmdown_iters * step_ms
         remaining_ms = max(max_wallclock_ms - elapsed_ms, 0.0)
         return remaining_ms / max(warmdown_ms, 1e-9) if remaining_ms <= warmdown_ms else 1.0
+    _do_lookahead_twopass = args.twopass_train_frac > 0 and (args.lookahead_smear or args.lookahead_bigram)
+    _lookahead_enabled = args.lookahead_smear or args.lookahead_bigram
+    # Precompute prior lookahead: uniform distribution → mean embedding
+    _prior_lookahead_emb = None
+    _prior_lookahead_ids = None
+    if _lookahead_enabled:
+        _la_batch_size = args.train_batch_tokens // (args.train_seq_len * world_size * grad_accum_steps)
+        with torch.no_grad():
+            _mean_emb = base_model.tok_emb.weight.mean(dim=0).to(dtype=torch.bfloat16)
+            _prior_lookahead_emb = _mean_emb.unsqueeze(0).unsqueeze(0).expand(_la_batch_size, args.train_seq_len, -1).contiguous()
+            _prior_lookahead_ids = torch.zeros(_la_batch_size, args.train_seq_len, dtype=torch.long, device=device)
+    compiled_fwd_logits_train = None
+    if _do_lookahead_twopass:
+        compiled_fwd_logits_train = torch.compile(base_model.forward_logits, dynamic=False, fullgraph=True)
+        # Trigger compilation at training batch size before timer starts
+        with torch.no_grad():
+            _dummy_x = torch.zeros(_la_batch_size, args.train_seq_len, dtype=torch.long, device=device)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                compiled_fwd_logits_train(
+                    _dummy_x,
+                    lookahead_emb=_prior_lookahead_emb if args.lookahead_smear else None,
+                    lookahead_ids=_prior_lookahead_ids if args.lookahead_bigram else None,
+                )
+            del _dummy_x
     if args.warmup_steps > 0:
         initial_model_state = {name: tensor.detach().cpu().clone() for name, tensor in base_model.state_dict().items()}
         initial_optimizer_states = [copy.deepcopy(opt.state_dict()) for opt in optimizers]
@@ -1450,7 +1616,9 @@ def main() -> None:
                 else:
                     x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
                     with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                        warmup_loss = model(x, y)
+                        warmup_loss = model(x, y,
+                                            lookahead_emb=_prior_lookahead_emb if _lookahead_enabled and args.lookahead_smear else None,
+                                            lookahead_ids=_prior_lookahead_ids if _lookahead_enabled and args.lookahead_bigram else None)
                 (warmup_loss * grad_scale).backward()
             for opt in optimizers:
                 opt.step()
@@ -1533,8 +1701,21 @@ def main() -> None:
                                  aux_loss_weight=args.draft_aux_loss_weight)
             else:
                 x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
+                # Compute lookahead: prior (cheap) or real predictions (two-pass)
+                # Lookahead: start with prior, optionally refine via two-pass
+                la_emb = _prior_lookahead_emb if _lookahead_enabled and args.lookahead_smear else None
+                la_ids = _prior_lookahead_ids if _lookahead_enabled and args.lookahead_bigram else None
+                if _do_lookahead_twopass and random.random() < args.twopass_train_frac:
+                    with torch.no_grad():
+                        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                            draft_logits = compiled_fwd_logits_train(x, lookahead_emb=la_emb, lookahead_ids=la_ids).detach()
+                    if args.lookahead_smear:
+                        probs = F.softmax(draft_logits / max(args.draft_temp, 0.01), dim=-1)
+                        la_emb = (probs @ base_model.tok_emb.weight).contiguous()
+                    if args.lookahead_bigram:
+                        la_ids = draft_logits.argmax(dim=-1).contiguous()
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                    loss = model(x, y)
+                    loss = model(x, y, lookahead_emb=la_emb, lookahead_ids=la_ids)
             train_loss += loss.detach()
             (loss * grad_scale).backward()
         train_loss /= grad_accum_steps
@@ -1650,12 +1831,15 @@ def main() -> None:
         ve_enabled=args.ve_enabled, ve_dim=args.ve_dim, ve_layers=args.ve_layers,
         leaky_relu_slope=args.leaky_relu_slope,
         draft_enabled=args.draft_enabled or args.eval_two_pass,
+        lookahead_smear=args.lookahead_smear,
+        lookahead_bigram=args.lookahead_bigram,
+        draft_temp=args.draft_temp,
     ).to(device).bfloat16()
     for m in eval_model.modules():
         if isinstance(m, CastedLinear):
             m.float()
     restore_low_dim_params_to_fp32(eval_model)
-    eval_model.load_state_dict(deq_state, strict=True)
+    eval_model.load_state_dict(deq_state, strict=not (args.eval_two_pass and not args.draft_enabled))
     compiled_eval = torch.compile(eval_model, dynamic=False, fullgraph=True)
     torch.cuda.synchronize()
     t_qeval = time.perf_counter()
@@ -1703,6 +1887,27 @@ def main() -> None:
         )
         log0(f"final_int6_sliding_window_s64_exact val_loss:{sw64_val_loss:.8f} val_bpb:{sw64_val_bpb:.8f}")
         log0(f"final_int8_zlib_roundtrip_exact val_loss:{sw64_val_loss:.8f} val_bpb:{sw64_val_bpb:.8f}")
+    # Lookahead multi-pass evaluation
+    if (args.lookahead_smear or args.lookahead_bigram) and args.eval_passes > 1 and args.eval_stride > 0:
+        for n_passes in range(2, args.eval_passes + 1):
+            torch.cuda.synchronize()
+            t_la = time.perf_counter()
+            la_val_loss, la_val_bpb = eval_val_sliding_lookahead(
+                args, eval_model, rank, world_size, device,
+                val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
+                stride=args.eval_stride,
+                num_passes=n_passes,
+                eval_seq_len=sw_seq_len,
+            )
+            torch.cuda.synchronize()
+            log0(
+                f"final_lookahead_{n_passes}pass val_loss:{la_val_loss:.4f} val_bpb:{la_val_bpb:.4f} "
+                f"stride:{args.eval_stride} eval_time:{1000.0 * (time.perf_counter() - t_la):.0f}ms"
+            )
+            log0(f"final_lookahead_{n_passes}pass_exact val_loss:{la_val_loss:.8f} val_bpb:{la_val_bpb:.8f}")
+            if _wandb:
+                _wandb.log({f"final/lookahead_{n_passes}pass_bpb": la_val_bpb,
+                            f"final/lookahead_{n_passes}pass_loss": la_val_loss})
     # Two-pass evaluation (if draft-trained or eval_two_pass)
     if (args.draft_enabled or args.eval_two_pass) and args.eval_stride > 0:
         torch.cuda.synchronize()

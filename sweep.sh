@@ -1,0 +1,20 @@
+#!/bin/bash
+set -euo pipefail
+
+# E2: Lookahead Smear + Bigram (self-refinement)
+./train.sh E2-lookahead LOOKAHEAD_SMEAR=1 LOOKAHEAD_BIGRAM=1 TWOPASS_TRAIN_FRAC=0.1 EVAL_PASSES=3
+
+# E3: Lookahead Smear only
+./train.sh E3-smear-only LOOKAHEAD_SMEAR=1 TWOPASS_TRAIN_FRAC=0.1 EVAL_PASSES=3
+
+# E4: Lookahead Bigram only
+./train.sh E4-bigram-only LOOKAHEAD_BIGRAM=1 TWOPASS_TRAIN_FRAC=0.1 EVAL_PASSES=3
+
+# E7: Best + LeakyReLU
+./train.sh E7-best-leaky LOOKAHEAD_SMEAR=1 LOOKAHEAD_BIGRAM=1 TWOPASS_TRAIN_FRAC=0.1 EVAL_PASSES=3 LEAKY_RELU_SLOPE=0.5
+
+# E8: Low temp drafts
+./train.sh E8-lowtemp LOOKAHEAD_SMEAR=1 LOOKAHEAD_BIGRAM=1 TWOPASS_TRAIN_FRAC=0.1 EVAL_PASSES=3 DRAFT_TEMP=0.5
+
+# E9: High temp drafts
+./train.sh E9-hitemp LOOKAHEAD_SMEAR=1 LOOKAHEAD_BIGRAM=1 TWOPASS_TRAIN_FRAC=0.1 EVAL_PASSES=3 DRAFT_TEMP=2.0
