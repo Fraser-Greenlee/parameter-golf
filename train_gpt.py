@@ -1790,9 +1790,11 @@ def main() -> None:
     excluded_mtp = sum(int(t.numel()) for k, t in full_state_dict.items() if "mtp_heads" in k)
     if excluded_mtp > 0:
         log0(f"export_excluding_mtp_params:{excluded_mtp}")
+    _model_pt = f"final_model_{args.run_id}.pt"
+    _model_int6 = f"final_model_{args.run_id}.int6.ptz"
     if master_process:
-        torch.save(export_sd, "final_model.pt")
-        model_bytes = os.path.getsize("final_model.pt")
+        torch.save(export_sd, _model_pt)
+        model_bytes = os.path.getsize(_model_pt)
         code_bytes = len(code.encode("utf-8"))
         log0(f"Serialized model: {model_bytes} bytes")
         log0(f"Code size: {code_bytes} bytes")
@@ -1803,7 +1805,7 @@ def main() -> None:
     quant_raw = quant_buf.getvalue()
     quant_blob = zstandard.ZstdCompressor(level=22).compress(quant_raw) if _COMPRESSOR == "zstd" else zlib.compress(quant_raw, 9)
     if master_process:
-        with open("final_model.int6.ptz", "wb") as f:
+        with open(_model_int6, "wb") as f:
             f.write(quant_blob)
         quant_file_bytes = len(quant_blob)
         code_bytes = len(code.encode("utf-8"))
@@ -1812,7 +1814,7 @@ def main() -> None:
         log0(f"Total submission size int8+zlib: {quant_file_bytes + code_bytes} bytes")
     if distributed:
         dist.barrier()
-    with open("final_model.int6.ptz", "rb") as f:
+    with open(_model_int6, "rb") as f:
         quant_blob_disk = f.read()
     quant_state = torch.load(
         io.BytesIO(zstandard.ZstdDecompressor().decompress(quant_blob_disk) if _COMPRESSOR == "zstd" else zlib.decompress(quant_blob_disk)),

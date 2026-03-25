@@ -94,12 +94,12 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 
 | Metric | Value |
 |--------|-------|
-| Steps | |
-| Step avg | |
-| Val BPB (single pass s64) | |
-| Val BPB (two-pass s64) | |
-| Val BPB (three-pass s64) | |
-| Notes | |
+| Steps | 6540 |
+| Step avg | 91.8ms |
+| Val BPB (single pass s64) | **1.1383** |
+| Val BPB (two-pass s64) | **1.1265** |
+| Val BPB (three-pass s64) | not run (srun time limit) |
+| Notes | Single-pass +0.011 vs E0 (training noise from lookahead). Two-pass -0.001 vs E0 — self-refinement works! Two-pass -0.012 vs own single-pass. Step time only +7ms vs baseline. TWOPASS_TRAIN_FRAC=0.1 was not tuned — sweeping this value is a TODO. |
 
 ---
 
@@ -111,10 +111,11 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 
 | Metric | Value |
 |--------|-------|
-| Steps | |
-| Val BPB (single pass s64) | |
-| Val BPB (two-pass s64) | |
-| Notes | |
+| Steps | 6621 |
+| Step avg | 90.6ms |
+| Val BPB (single pass s64) | **1.1408** |
+| Val BPB (two-pass s64) | **1.1259** |
+| Notes | Smear alone gives -0.015 two-pass gain (best of any config). Two-pass 1.1259 beats E2's 1.1265. Bigram adds no value — smear is the key feature. |
 
 ---
 
@@ -126,10 +127,11 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 
 | Metric | Value |
 |--------|-------|
-| Steps | |
-| Val BPB (single pass s64) | |
-| Val BPB (two-pass s64) | |
-| Notes | |
+| Steps | 6290 |
+| Step avg | 95.4ms |
+| Val BPB (single pass s64) | **1.1272** |
+| Val BPB (two-pass s64) | **1.1271** |
+| Notes | Essentially zero two-pass gain (-0.0001). Discrete argmax IDs don't carry useful lookahead signal. Higher step time (95ms) from bigram forward hash overhead. |
 
 ---
 
@@ -143,21 +145,38 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 |--------|-------|
 | Steps | |
 | Val BPB (two-pass s64) | |
-| Notes | |
+| Notes | Deferred |
 
 ---
 
 ### E7: Best Lookahead + LeakyReLU
 **What:** Best lookahead config from E2-E4 + LeakyReLU(0.5)². Tests whether improvements stack.
-**Config:** Best lookahead config + `LEAKY_RELU_SLOPE=0.5`
+**Config:** `LOOKAHEAD_SMEAR=1 LOOKAHEAD_BIGRAM=1 TWOPASS_TRAIN_FRAC=0.1 LEAKY_RELU_SLOPE=0.5`
 **Expected:** Combined improvement. If they stack: potential record.
 
 | Metric | Value |
 |--------|-------|
-| Steps | |
-| Val BPB (single pass s64) | |
-| Val BPB (two-pass s64) | |
-| Notes | |
+| Steps | 6475 |
+| Step avg | 92.7ms |
+| Val BPB (single pass s64) | **1.1345** |
+| Val BPB (two-pass s64) | **1.1248** |
+| Notes | Best two-pass BPB of any experiment. Beats E1 LeakyReLU (1.1214) at two-pass. LeakyReLU and lookahead stack. TWOPASS_TRAIN_FRAC=0.1 not tuned. |
+
+---
+
+### TWOPASS_TRAIN_FRAC Sweep
+**What:** Sweep the fraction of steps that use two-pass self-refinement training.
+**Config:** `LOOKAHEAD_SMEAR=1 LOOKAHEAD_BIGRAM=1` with varying `TWOPASS_TRAIN_FRAC`
+
+| Frac | Steps | Step avg | 1-pass BPB | 2-pass BPB | Notes |
+|------|-------|----------|------------|------------|-------|
+| 0.02 | 6548 | 91.6ms | 1.2035 | 1.1336 | Single-pass badly degraded |
+| 0.05 | 6421 | 93.4ms | — | — | **Invalid: concurrent run clobbered checkpoint** |
+| 0.10 | 6540 | 91.8ms | 1.1383 | **1.1265** | (= E2 result) |
+| 0.20 | 6231 | 96.4ms | — | — | **Invalid: concurrent run clobbered checkpoint** |
+| 0.50 | 5745 | 104.5ms | 1.1611 | 1.1310 | Too many two-pass steps, fewer total steps |
+
+**Note:** frac=0.05 and 0.20 produced identical eval results due to concurrent runs overwriting `final_model.pt`. Fixed by adding run-ID to model filenames. Rerun needed.
 
 ---
 
@@ -225,9 +244,10 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 
 | Profile | Steps | Step avg | Val BPB (s64) | Notes |
 |---------|-------|----------|---------------|-------|
-| diamond | | | | |
-| tapered | | | | |
-| inverse_diamond | | | | |
+| diamond (unaligned) | 5897 | 101.75ms | 1.1292 | Non-aligned d_ff (1054,1269,...) caused ~18% step-time regression from poor GPU matmul tiling |
+| diamond (aligned) | 6562 | 91.4ms | 1.1256 | d_ff rounded to multiples of 128. Step time improved but still ~5ms overhead. Wider middle layers → slightly slower |
+| tapered | 6887 | 87.1ms | 1.1238 | Wide early layers (2048→1024). No step-time overhead. 0.002 BPB worse than E1 |
+| inverse_diamond | 7003 | 85.7ms | **1.1220** | Wide edges, narrow middle. Fastest profile — slightly faster than uniform. BPB essentially tied with E1 (1.1214). Goes against literature prediction that middle layers need more capacity |
 
 ---
 
@@ -242,10 +262,10 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 
 | MTP_N | MTP_LAMBDA | Steps | Step avg | Val BPB (s64) | Notes |
 |-------|------------|-------|----------|---------------|-------|
-| 2 | 0.1 | | | | |
-| 2 | 0.3 | | | | |
-| 2 | 1.0 | | | | |
-| 4 | 0.3 | | | | |
+| 2 | 0.1 | 6740 | 89.1ms | 1.1275 | +0.006 BPB vs E1. Small step-time overhead (~3ms) from extra head. MTP hurts — auxiliary loss competing with main NTP objective |
+| 2 | 0.3 | | | 1.1354 | Worse than λ=0.1. Higher MTP weight = more interference with main NTP loss |
+| 2 | 1.0 | | | 1.1546 | Much worse. MTP loss dominates training, main NTP quality degrades substantially |
+| 4 | 0.3 | | | 1.1395 | 3 auxiliary heads (t+2,t+3,t+4). Worse than n=2 λ=0.3. More heads = more interference, no benefit from longer-range prediction |
 
 ---
 
