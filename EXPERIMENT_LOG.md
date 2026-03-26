@@ -391,6 +391,110 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 
 ---
 
+## Phase 6: Analysis-Motivated Experiments (on SOTA+TTT baseline)
+
+All experiments below run on the current SOTA (abaybektursun's LeakyReLU² + Parameter Banking + Legal TTT, 1.1194 BPB post-TTT). Motivated by the full-stack model analysis (v2). Split into **memory-saving** (maintain BPB with fewer bytes) and **performance-improving** (better BPB, potentially more bytes).
+
+### E17: Mixed Quantization — int8 for MLP Down-Projections
+**Category:** Memory-saving / free accuracy
+**What:** Use int8 quantization (clip range [-127,127]) for mlp_down weights instead of int6 ([-31,31]). Both store as 1-byte int8 — the only cost is worse lzma compression (more unique values). Analysis shows mlp_down has 3x worse quantization error (RelMSE 6e-3 vs 2e-3 for mlp_up). This targets the single biggest source of quantization degradation.
+**Config:** Modify `_classify_param` to route `mlp.proj` → int8. Everything else stays int6.
+**Expected:** -0.001 to -0.003 BPB from reduced quantization error. Risk: artifact may exceed 16MB from worse compression.
+**Why:** Directly targets the #1 quantization bottleneck identified in analysis. Zero training cost — post-training only.
+
+| Metric | Value |
+|--------|-------|
+| Pre-TTT BPB | |
+| Post-TTT BPB | |
+| Artifact size | |
+| Notes | |
+
+---
+
+### E18: Extend ValueEmbedding to Layers 7–8
+**Category:** Performance-improving (minimal extra memory)
+**What:** Add VE to XSA layers 7–8 in addition to current layers 9–10. The shared VE table (1024×128) is already paid for; each new layer only adds 1 scale parameter. Analysis shows VE contributes substantially at layers 9–10 (norms 23.4, 17.0). Layers 7–8 are XSA layers with active attention — giving them token identity through values could help.
+**Config:** `VE_LAYERS=7,8,9,10`
+**Expected:** Modest BPB improvement. Negligible parameter/size cost. Could slightly slow step time from extra VE lookups.
+
+| Metric | Value |
+|--------|-------|
+| Pre-TTT BPB | |
+| Post-TTT BPB | |
+| Step avg | |
+| Artifact size | |
+| Notes | |
+
+---
+
+### E19: Larger BigramHash Table (4096 or 8192 buckets)
+**Category:** Performance-improving (uses more memory)
+**What:** Increase bigram hash table from 1536 to 4096 or 8192 buckets. Analysis shows current 1536 buckets have 45 collisions per bucket — each embedding averages 45 different bigram contexts. SOTA ablation showed 2048→3072 gave -0.0009 BPB. More viable if memory is freed by E17/E20/E22.
+**Config:** `BIGRAM_VOCAB_SIZE=4096` (then 8192 if room)
+**Expected:** -0.001 to -0.002 BPB. 4096×128 = 512K params (vs 196K). Need to verify artifact fits 16MB.
+
+| Bigram Size | Pre-TTT BPB | Post-TTT BPB | Artifact | Notes |
+|-------------|-------------|-------------|----------|-------|
+| 1536 (SOTA) | 1.1218 | 1.1194 | ~15.9MB | baseline |
+| 4096 | | | | |
+| 8192 | | | | |
+
+---
+
+### E20: Remove/Freeze Layer 0 Attention
+**Category:** Memory-saving (~1.5M params)
+**What:** Layer 0 attention contributes 3.8% with AttnScale 0.067 — essentially vestigial. Two variants:
+- **v1 (freeze):** Set `blocks[0].attn_scale` to zero and freeze. Saves compute, no architecture change.
+- **v2 (remove + widen MLP):** Skip attention entirely in layer 0. Reallocate params to widen layer 0 MLP from 3x (1536) to ~4.5x (2304). Makes the implicit token-lookup pattern explicit.
+**Config:** v1: code change to freeze. v2: architecture change (breaks parameter banking for layer 0).
+**Expected:** v1: neutral BPB, slight step-time improvement → more steps. v2: potentially better BPB from bigger lookup table, but non-uniform MLP may slow step time.
+**Risk:** v2 breaks parameter banking; non-uniform d_ff can add ~5ms overhead (E10).
+
+| Variant | Pre-TTT BPB | Post-TTT BPB | Step avg | Artifact | Notes |
+|---------|-------------|-------------|----------|----------|-------|
+| v1 (freeze) | | | | | |
+| v2 (widen MLP) | | | | | |
+
+---
+
+### E21: Analysis-Informed MLP Profile
+**Category:** Performance-improving (same total params)
+**What:** Custom d_ff per layer informed by activation analysis, instead of uniform 3x. Profile:
+- Layer 0: 2304 (4.5x) — pure MLP lookup, needs capacity
+- Layers 1–2: 1536 (3x) — standard
+- Layers 3–6: 1280 (2.5x) — attention-heavy middle layers, MLP less critical
+- Layers 7–8: 1536 (3x) — XSA layers
+- Layers 9–10: 1280 (2.5x) — small contribution layers
+All d_ff rounded to multiples of 128 for GPU tiling. Total params kept constant.
+**Config:** Per-layer d_ff list. Breaks parameter banking (non-uniform bank shapes).
+**Expected:** Small BPB improvement. Risk of 5ms+ step-time overhead from non-uniform matmul shapes.
+**Why:** Unlike E10's generic diamond/inverse-diamond, this profile is specifically motivated by per-layer activation data.
+
+| Metric | Value |
+|--------|-------|
+| Pre-TTT BPB | |
+| Post-TTT BPB | |
+| Step avg | |
+| Notes | |
+
+---
+
+### E22: Depth Recurrence for Middle Layers
+**Category:** Memory-saving (fewer unique params → smaller artifact)
+**What:** Layers 3–6 have similar activation patterns (MixX0 ≈ 0, moderate attn/MLP, lowest cosine with output). Two variants:
+- **v1 (weight sharing):** Share MLP weights across layers 3–5 (keep attention unique). Per-layer adapter (learned scale or rank-1 offset). Reduces unique MLP params → smaller artifact → room for bigger bigram table or wider edge layers.
+- **v2 (eval-time recursion):** At eval time, run layers 3–6 through 2 iterations instead of 1 pass each. No training change — just loop blocks twice. Tests whether middle layers benefit from iterative refinement. Uses the separate 10-min eval budget.
+**Config:** v1: weight-tying code change. v2: eval-only loop in forward_logits.
+**Expected:** v1: neutral BPB with ~2–3MB artifact savings. v2: uncertain — may help or hurt.
+**Risk:** v1 interacts with Muon optimizer. v2 doubles compute for 4 layers (~30ms extra per eval pass).
+
+| Variant | Pre-TTT BPB | Post-TTT BPB | Artifact | Notes |
+|---------|-------------|-------------|----------|-------|
+| v1 (shared MLP) | | | | |
+| v2 (eval recursion) | | | | |
+
+---
+
 ## SOTA Model Analysis (abaybektursun, 1.1215 BPB pre-TTT)
 
 Full-stack analysis of the current SOTA model (LeakyReLU² + Parameter Banking, PR #549) on 6.55M validation tokens. Trained from scratch, scored at **1.1215 BPB** sliding window s64. Analysis scripts: `analyze_model.py` (v1), `analyze_model_v2.py` (v2). Results: `analysis_results_v2/a5f86f51/`.
