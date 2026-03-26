@@ -354,10 +354,12 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 |---|-----------|-----------|-------|
 | 0.85 | 1.1429 | 1.1429 | Much worse — too sharp |
 | 0.90 | 1.1308 | 1.1308 | Worse |
-| 0.95 | | | running |
-| 1.00 | ~1.1231 | ~1.1231 | baseline |
-| 1.05 | | | running |
-| 1.10 | | |
+| 0.95 | 1.1259 | 1.1259 | Worse |
+| **1.00** | **1.1238** | **1.1238** | **Best — baseline optimal** |
+| 1.05 | 1.1253 | — | Worse |
+| 1.10 | 1.1304 | — | Worse |
+
+**Findings:** T=1.0 is optimal. The logit softcap (tanh, cap=30) already handles calibration — any temperature scaling makes things worse. Both directions (sharper and softer) hurt. Temperature scaling is not useful for this model.
 
 ---
 
@@ -404,10 +406,10 @@ All experiments below run on the current SOTA (abaybektursun's LeakyReLU² + Par
 
 | Metric | Value |
 |--------|-------|
-| Pre-TTT BPB | |
-| Post-TTT BPB | |
-| Artifact size | |
-| Notes | |
+| Pre-TTT BPB (s64) | **1.1178** (-0.0037 vs SOTA 1.1215) |
+| Post-TTT BPB | 1.1179 (control-tensor TTT, negligible change) |
+| Artifact size | **18.03 MB — EXCEEDS 16MB LIMIT** |
+| Notes | int8 for mlp_down gives a large BPB improvement (-0.0037) but the artifact blows up by +2.1MB from worse lzma compression. The wider int8 value range [-127,127] vs int6 [-31,31] produces more unique byte values that lzma can't compress as well. Would need to be paired with parameter savings elsewhere (E20, E22) to fit in 16MB. The BPB gain confirms mlp_down quantization is a real bottleneck. |
 
 ---
 
@@ -419,11 +421,12 @@ All experiments below run on the current SOTA (abaybektursun's LeakyReLU² + Par
 
 | Metric | Value |
 |--------|-------|
-| Pre-TTT BPB | |
-| Post-TTT BPB | |
-| Step avg | |
-| Artifact size | |
-| Notes | |
+| Steps | 6725 |
+| Step avg | 89.2ms (+2.7ms overhead from extra VE lookups) |
+| Pre-TTT BPB | **1.1237** |
+| Post-TTT BPB | **1.1215** |
+| Artifact size | 15.9MB |
+| Notes | VE expansion adds ~3ms/step → ~375 fewer steps. +0.002 worse pre-TTT vs SOTA. The extra VE lookups at layers 7-8 don't pay for themselves — the step time cost outweighs the marginal benefit. |
 
 ---
 
@@ -492,6 +495,202 @@ All d_ff rounded to multiples of 128 for GPU tiling. Total params kept constant.
 |---------|-------------|-------------|----------|-------|
 | v1 (shared MLP) | | | | |
 | v2 (eval recursion) | | | | |
+
+---
+
+## Phase 7: Novel Techniques from Literature & Community (March 2026)
+
+These experiments incorporate techniques from recent papers (2025–2026) and community discoveries from the parameter-golf leaderboard. Prioritized by expected value and implementation feasibility. Run on the SOTA baseline (1.1194 BPB post-TTT).
+
+### E23: Multi-Order N-gram Cache with Entropy-Adaptive Interpolation (Eval-Time)
+**Category:** Eval-time only — zero training cost
+**What:** Revisit E16's cache approach with the technique used by sub-1.0 BPB submissions (PR #727, #740). Key differences from E16: (1) use 5-gram backoff (5→4→3→2→1-gram) instead of bigram-only, (2) entropy-adaptive interpolation weight — when the neural model is confident (low entropy), trust it; when uncertain, lean on the cache, (3) modified Kneser-Ney smoothing instead of simple add-k. Build the cache from already-scored text (legal per competition rules). The cache is built at eval time — zero artifact bytes.
+**Config:** Eval-time only. Hyperparameters: max n-gram order (3–7), smoothing method, entropy threshold for adaptive λ.
+**Expected:** -0.02 to -0.10+ BPB based on community results. E16 failed because bigram counts at V=1024 lack discriminative power; higher-order n-grams should provide much stronger signal. This is the single biggest lever on the current leaderboard.
+**Why:** The gap from 1.12 to sub-1.0 BPB is almost entirely this technique. Our E16 failure was a methodology issue (wrong n-gram order + fixed λ), not a fundamental limitation.
+
+| Max Order | Smoothing | λ Strategy | Pre-cache BPB | Post-cache BPB | Notes |
+|-----------|-----------|------------|---------------|----------------|-------|
+| 5 | Kneser-Ney | entropy-adaptive | | | |
+| 5 | add-k | entropy-adaptive | | | |
+| 7 | Kneser-Ney | entropy-adaptive | | | |
+
+---
+
+### E24: ESLM Token-Level Loss Masking
+**Category:** Training improvement — near-zero overhead
+**What:** Apply Value-at-Risk (VaR) thresholding on per-token loss within each batch. Compute per-token loss, find the quantile threshold (e.g., 60th percentile), zero out losses below the threshold before backward pass. This retains only the most informative tokens for gradient computation. From Bal et al. (May 2025), "Risk-Averse Selective Language Modeling". No reference model needed, operates online, ~5 lines of code.
+**Config:** `ESLM_QUANTILE=0.6` (mask bottom 40% of tokens by loss). Sweep: {0.4, 0.5, 0.6, 0.7}.
+**Expected:** ~1.5x data efficiency for free. Our analysis shows word-initial tokens (40% of tokens) account for 67% of total loss — ESLM naturally focuses gradients on these hard tokens. Near-zero step-time overhead (just a quantile computation + mask).
+**Why:** Directly addresses the loss distribution skew identified in our analysis. Cheapest possible training improvement.
+
+| Quantile | Steps | Step avg | Val BPB | Notes |
+|----------|-------|----------|---------|-------|
+| 0.4 | | | | |
+| 0.5 | | | | |
+| 0.6 | | | | |
+| 0.7 | | | | |
+
+---
+
+### E25: LAWA Weight Averaging (Replacing EMA/SWA)
+**Category:** Training improvement — drop-in replacement
+**What:** Replace EMA + SWA with LAWA (Latest-Averaging Weight Averaging). Maintain a FIFO buffer of K recent checkpoints (spaced by ~60s), average them uniformly. From Ajroldi et al. (Feb 2025), tested on 124M transformer on 5B FineWebEdu tokens — nearly identical to our setting. Key finding: optimal averaging horizon is ~1% of total training budget; LAWA reaches validation targets in 15–25% fewer steps than EMA.
+**Config:** `LAWA_K=10 LAWA_INTERVAL=60` (buffer of 10 checkpoints, one every 60s). Start averaging early (unlike classical SWA). Disable existing EMA/SWA.
+**Expected:** 15–25% effective compute improvement. Direct upgrade to existing infrastructure. The current EMA (decay=0.997) + SWA (every 50 steps) may be suboptimal — LAWA's uniform average over a sliding window is more robust.
+**Why:** Validated on our exact setting (124M/FineWebEdu). Drop-in replacement for existing weight averaging.
+
+| K | Interval | Steps | ms/step | Pre-TTT BPB | Post-TTT BPB | Notes |
+|---|----------|-------|---------|-------------|-------------|-------|
+| 10 | 100 steps | 7152 | 83.9 | **1.1226** | **1.1202** | +0.0008 vs SOTA post-TTT. Fastest step time of any config — LAWA overhead negligible. Applied with k=10 checkpoints at end. |
+| 5 | 60s | | | | | |
+| 10 | 30s | | | | | |
+
+---
+
+### E26: Self-Distillation from EMA Copy
+**Category:** Training improvement — near-zero overhead
+**What:** Use the existing EMA model's predictions as soft targets for an auxiliary KL-divergence loss: `L = L_NTP + α × KL(logits, ema_logits.detach())`. The EMA teacher provides smoother probability distributions that act as adaptive label smoothing — no hardcoded smoothing constant, the regularization strength naturally adapts to what the model has learned. ~3 lines of code. The EMA forward pass can reuse the same compiled graph.
+**Config:** `SELF_DISTILL_ALPHA=0.1`. Sweep: {0.05, 0.1, 0.3}.
+**Expected:** Small but consistent BPB improvement (-0.001 to -0.003). Free regularization from infrastructure we already pay for. Risk: EMA forward pass adds ~85ms/step if done every step — may need to sample (e.g., every 5th step).
+**Why:** Exploits existing EMA infrastructure. The EMA model is a better teacher than label smoothing because its soft targets reflect learned token co-occurrence patterns.
+
+| Alpha | Frequency | Steps | Step avg | Val BPB | Notes |
+|-------|-----------|-------|----------|---------|-------|
+| 0.05 | every step | | | | |
+| 0.1 | every step | | | | |
+| 0.1 | every 5th | | | | |
+| 0.3 | every step | | | | |
+
+---
+
+### E27: TrigramHash Embedding
+**Category:** Training improvement — small parameter cost
+**What:** Extend BigramHash to 3-token patterns: hash(tok[t], tok[t-1], tok[t-2]) into a separate learned embedding table. Already adopted by the competition community. Captures longer local context (e.g., 3-char subword patterns) without attention. Use different hash constants to avoid collision correlation with the bigram table.
+**Config:** `TRIGRAM_VOCAB_SIZE=2048 TRIGRAM_DIM=128`. Separate embedding table + projection + learned scale, same architecture as BigramHash. The trigram embedding is added alongside the bigram embedding.
+**Expected:** -0.001 to -0.003 BPB. Helps at word-initial positions where bigram context (2 tokens) is ambiguous but trigram context (3 tokens) may disambiguate. Parameter cost: 2048×128 + 128×512 = 328K params (~1.3MB uncompressed, ~0.3MB int6+lzma).
+**Why:** Natural extension of existing infrastructure. Community-validated. Targets word-initial tokens where our analysis shows loss concentrates.
+
+| Trigram Size | Steps | Step avg | Val BPB | Artifact | Notes |
+|-------------|-------|----------|---------|----------|-------|
+| 2048 | | | | | |
+| 4096 | | | | | |
+
+---
+
+### E28: Differential Attention
+**Category:** Architecture change — moderate implementation effort
+**What:** Replace standard multi-head attention with differential attention (ICLR 2025, Microsoft). Each differential head computes attention as `softmax(Q₁K₁ᵀ) - λ·softmax(Q₂K₂ᵀ)`, cancelling "attention noise" — spurious attention to irrelevant tokens. A learnable scalar λ per head (initialized via exponential decay across layers) controls subtraction strength. Halves head count to match parameter budget: 8 standard → 4 differential heads (each with 2 sub-heads). Requires per-head GroupNorm between the subtraction and value projection.
+**Config:** Replace attention in all layers. `DIFF_ATTN=1`. Keep KV head count at 4 (2 diff KV heads × 2 sub-heads).
+**Expected:** At 3B scale, 7.5% accuracy gain on math reasoning. At sub-100M, noise cancellation may be even more valuable since each head carries proportionally more weight. Risk: GroupNorm may add compile overhead; interaction with XSA (which also modifies attention) needs careful handling.
+**Why:** Directly addresses attention noise, which is proportionally more costly in small models. The λ parameters add negligible memory.
+
+| Metric | Value |
+|--------|-------|
+| Steps | |
+| Step avg | |
+| Val BPB | |
+| Notes | |
+
+---
+
+### E29: WSD Learning Rate Schedule
+**Category:** Training improvement — hyperparameter change only
+**What:** Switch from current cosine-with-warmdown to explicit Warmup-Stable-Decay (WSD). Multiple papers (Hägele 2024, Wen 2024, Dremov TMLR 2025) show WSD outperforms cosine for fixed compute budgets. The "river valley" hypothesis: during stable phase at peak LR, the model explores flat manifold directions; during decay, oscillations are suppressed. Schedule: warmup ~1% of steps (~70), stable ~75-80% (~5600), sqrt-decay final ~20% (~1400). Additional trick: raise AdamW β₂ to 0.995 during cooldown.
+**Config:** `LR_SCHEDULE=wsd WSD_STABLE_FRAC=0.79 WSD_DECAY_SHAPE=sqrt`. The current WARMDOWN_ITERS=3500 (of ~7000 steps) is already 50% decay — WSD suggests this is too aggressive; most time should be at peak LR.
+**Expected:** -0.001 to -0.003 BPB from better LR utilization. The current schedule may be leaving performance on the table by starting decay too early.
+**Why:** Pure hyperparameter optimization. Zero code risk. Multiple independent papers converge on this conclusion.
+
+| Schedule | Stable% | Decay Shape | Val BPB | Notes |
+|----------|---------|-------------|---------|-------|
+| cosine (baseline) | — | — | 1.1194 | current |
+| WSD | 79% | sqrt | | |
+| WSD | 79% | linear | | |
+| WSD + raised β₂ | 79% | sqrt | | |
+
+---
+
+### E30: MiLe Loss (Entropy-Weighted Cross-Entropy)
+**Category:** Training improvement — zero parameter overhead
+**What:** Replace standard cross-entropy with `loss = H(p)^γ × (-log p_target)`, where H(p) is the predicted distribution's entropy. Upweights tokens where the model is genuinely uncertain (high-entropy predictions) while downweighting tokens where the model is confident or where multiple valid continuations exist. From NAACL 2024. At V=1024, the small vocabulary creates more uniform distributions on average, making entropy-based weighting especially informative.
+**Config:** `MILE_GAMMA=1.0`. Sweep: {0.5, 1.0, 1.5}.
+**Expected:** Small BPB improvement. Complements ESLM (E24): ESLM masks easy tokens entirely, MiLe reweights the remaining ones by uncertainty. Zero parameter overhead, single hyperparameter.
+**Why:** Targets the same loss distribution skew as ESLM but via continuous reweighting rather than hard masking. May compose well with ESLM.
+
+| γ | Steps | Val BPB | Notes |
+|---|-------|---------|-------|
+| 0.5 | | | |
+| 1.0 | | | |
+| 1.5 | | | |
+
+---
+
+### E31: Batch Size Warmup
+**Category:** Training improvement — scheduling change only
+**What:** Start training with smaller effective batch size and increase over time. "Critical Batch Size Revisited" (NeurIPS 2025, Allen AI) shows CBS is near zero at initialization and increases during training. Starting small gives more gradient updates when each step matters most (early training). Implementation: start with gradient accumulation=1 (or 2), double when CBS grows (or on a fixed schedule). Achieves same loss with 43% fewer gradient steps on OLMo 1B.
+**Config:** `BATCH_WARMUP=1` — start at half batch size for first 20% of steps, then full. With 8 GPUs, this means fewer tokens per step early but more steps.
+**Expected:** -0.001 to -0.005 BPB from better utilization of early training steps. Risk: with only ~7000 total steps, the granularity may be too coarse. Need to verify torch.compile handles the batch size change (may require recompilation at transition point).
+**Why:** Free scheduling improvement. Multiple papers agree: don't start with maximum batch size.
+
+| Schedule | Steps | Val BPB | Notes |
+|----------|-------|---------|-------|
+| fixed (baseline) | ~7000 | 1.1194 | current |
+| half→full at 20% | | | |
+| quarter→full at 10%,20% | | | |
+
+---
+
+### E32: Existing Code Knobs Sweep (GATED_ATTENTION, VALUE_RESIDUAL, DTG)
+**Category:** Training improvement — already implemented, zero implementation risk
+**What:** Three features are implemented in `train_gpt.py` but never tested. Each is a single env var flip:
+- **GATED_ATTENTION=1**: Per-head sigmoid gate on attention output. `nn.Linear(dim, num_heads)` → sigmoid, init bias=4.0 (starts ~open). Learns to downweight noisy heads. Adds ~4K params per layer (~44K total). Conceptually related to differential attention (E28) but simpler — gates entire heads rather than subtracting softmax maps.
+- **VALUE_RESIDUAL=1**: DeepSeek-V2 style value residual. First layer's raw values (`v0`) are mixed into every subsequent layer: `v = λ₀·v₀ + λ₁·v` with learned `vr_lambda=[0.5, 0.5]`. Preserves token identity through the attention stack — similar motivation to VE (E18) but through values rather than additive embeddings. Adds 2 params per layer.
+- **DTG_ENABLED=1**: Dynamic Token Gating. Per-block `nn.Linear(dim, 1)` → sigmoid gate on entire block output: `x_out = x_in + gate·(x_out - x_in)`. Computed from detached input. Learns per-token whether to apply or skip each block. Init bias=2.0 (starts ~open). Adds ~513 params per layer.
+**Config:** Test each individually, then best combination. All on SOTA baseline with LeakyReLU.
+**Expected:** Each is a well-motivated architectural refinement with small param overhead. GATED_ATTENTION may particularly help since our analysis shows layer 0 attention is vestigial (3.8%) — a gated head could learn to suppress it. VALUE_RESIDUAL may help since VE at layers 9-10 already shows the model wants token identity in late layers.
+**Why:** Highest possible EV: these features are already debugged and compiled. Zero implementation risk. Just need GPU time.
+
+| Config | Steps | Step avg | Pre-TTT BPB | Post-TTT BPB | Artifact | Notes |
+|--------|-------|----------|-------------|-------------|----------|-------|
+| Clean baseline | pending | | | | | Running for comparison |
+| GATED_ATTENTION=1 | 6929 | 86.6ms | (crashed) | (crashed) | 15.9MB | Training OK, eval crashed from checkpoint file race. Resubmitted. |
+| VALUE_RESIDUAL=1 | 7105 | **84.5ms** | 1.1233 | 1.1210 | 15.8MB | 2ms/step faster! More steps. Pre-TTT +0.0015 vs SOTA. |
+| DTG_ENABLED=1 | 6582 | 91.2ms | 1.1237 | 1.1215 | 15.9MB | 4.7ms/step slower — per-block gate too expensive. Fewer steps. |
+| GA=1 + VR=1 | | | | | | pending — after GA rerun |
+| GA=1 + VR=1 + DTG=1 | | | | | | pending |
+
+---
+
+### E33: Control-Tensor-Only TTT (Ultragentle Adaptation)
+**Category:** Eval-time improvement — requires code change to TTT parameter selection
+**What:** Modify TTT (E12) to update only the small control tensors — gates, scales, VE weights, smear parameters — instead of all block parameters. The `CONTROL_TENSOR_NAME_PATTERNS` list already classifies these: `attn_scale`, `mlp_scale`, `resid_mix`, `q_gain`, `skip_weight`, `smear`, `ve_layer_scales`, `ve_shared.scale`, `attn_gate`, `vr_lambda`, `dtg_gate`. Total ~500-5K parameters depending on which features are active. Use much lower LR (1e-4 vs 2e-3) and fewer epochs (1 vs 3).
+**Config:** New TTT mode: `TTT_PARAMS=control` (vs current `TTT_PARAMS=all`). Sweep `TTT_LR` in {5e-5, 1e-4, 5e-4}, `TTT_EPOCHS` in {1, 2}.
+**Expected:** E12's failure mode was clear: full-model SGD at lr=0.002 was too aggressive — BPB climbed monotonically after initial chunks. With ~500 low-dimensional control params, overfitting risk drops dramatically. These params (attention scales, skip weights, smear gates) control how the model routes information — adapting them to document-specific statistics is well-motivated. If control-tensor TTT works, it could be combined with the n-gram cache (E23) for additive gains.
+**Why:** E12 proved TTT is too aggressive on this model. The fix isn't to abandon adaptation but to restrict it to the safest, most interpretable parameters. This is genuinely different from E12 — different parameter set, different LR, different epoch count.
+
+| TTT_PARAMS | TTT_LR | TTT_EPOCHS | Param count | Pre-TTT BPB | Post-TTT BPB | Notes |
+|------------|--------|------------|-------------|-------------|-------------|-------|
+| control | 1e-4 | 1 | 25,691 | 1.1178 | **1.1179** | Flat — control tensors don't adapt at this LR |
+| control | 5e-5 | 1 | | | | |
+| control | 5e-4 | 1 | | | | |
+| control | 1e-4 | 2 | | | | |
+
+**First result (lr=1e-4, 1 epoch, 243s):** 25,691 control params (skip_weights, smear.gate, per-layer attn_scale/mlp_scale/resid_mix/q_gain, ve scales). BPB essentially flat (1.1178→1.1179). The control tensors are too few and too low-dimensional to capture document-level patterns. May need higher LR or fundamentally more params. Note: this ran on the E17 model (int8 mlp_down), so pre-TTT is 1.1178 not 1.1215.
+
+---
+
+### E34: Forward VE Injection (Late-Layer Draft Signal)
+**Category:** Architecture change — moderate implementation effort
+**What:** Instead of injecting draft predictions into SmearGate (pre-attention, global), inject them into late-layer Value Embeddings where the model is already performing output disambiguation. Pass 1: run model normally. Pass 2: use pass-1 soft predictions (`softmax(logits) @ ve_embed.weight`) as an additional VE contribution in layers 9-10 only. This keeps the draft signal in the part of the network that's already doing token identity reinjection (VE norms 23.4, 17.0 in analysis), rather than polluting early representations via SmearGate.
+**Config:** `FORWARD_VE=1 VE_LAYERS=9,10`. New per-VE-layer learned scale (init 0.01). Two-pass training at frac=0.05.
+**Expected:** If the remaining lookahead ceiling exists, this is the most principled injection point. The zero-prior SmearGate experiment showed the model ignores ungrounded signals at the embedding level — but VE at layers 9-10 operates on the refined residual stream where the model has already built rich representations. The draft signal may be more useful here.
+**Why:** SmearGate injection failed because it operates pre-attention on raw embeddings. VE injection operates post-attention on refined representations. This directly tests whether the injection point was the problem, not the concept.
+
+| Injection | Prior | Steps | 1-pass BPB | 2-pass BPB | Notes |
+|-----------|-------|-------|------------|------------|-------|
+| VE layers 9-10 | mean emb | | | | |
+| VE layers 9-10 | bigram | | | | |
+| VE layers 7-10 | mean emb | | | | |
 
 ---
 
