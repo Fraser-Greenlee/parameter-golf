@@ -197,18 +197,25 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 | Run | Prior | Scale | Curriculum | Steps | 1-pass BPB | 2-pass BPB | Notes |
 |-----|-------|-------|------------|-------|------------|------------|-------|
 | v2 (find_unused) | mean | gate_fwd | 80/20 | 5714 | 1.1334 | 1.1330 | Failed: DDP overhead |
-| v3 (mean prior) | mean | gate_fwd | 80/20 | 6654 | 1.1352 | **1.1237** | Same 2-pass as full training |
+| v3 (mean prior) | mean | gate_fwd | 80/20 | 6654 | 1.1352 | **1.1237** | Best 2-pass gain (-0.012) |
 | v4 (zero prior) | zero | gate_fwd | 80/20 | 6399 | 1.1359 | 1.1265 | Worse than mean prior |
-| learned scale_fwd | zero | learned 0.1 | none | 6614 | **1.1224** | 1.1224 | No 2-pass gain — scale decayed to ~0 |
-| learned scale_fwd | zero | learned 0.1 | 80/20 | 6661 | **1.1225** | 1.1225 | Same — model ignores lookahead |
-| fixed 0.1 scale | zero | fixed 0.1 | none | 6654 | **1.1223** | 1.1225 | No 2-pass gain — model ignores zero prior |
-| fixed 0.1 scale | zero | fixed 0.1 | 80/20 | 6711 | **1.1220** | 1.1222 | Same |
+| learned scale_fwd | zero | learned 0.1 | none | 6614 | 1.1224 | 1.1224 | No 2-pass gain — scale decayed to ~0 |
+| learned scale_fwd | zero | learned 0.1 | 80/20 | 6661 | 1.1225 | 1.1225 | Same — model ignores lookahead |
+| fixed 0.1 scale | zero | fixed 0.1 | none | 6654 | 1.1223 | 1.1225 | No 2-pass gain — model ignores zero prior |
+| fixed 0.1 scale | zero | fixed 0.1 | 80/20 | 6711 | 1.1220 | 1.1222 | Same |
+| bigram prior | bigram | fixed 0.1 | none | 6625 | 1.1234 | 1.1232 | Good single-pass, no 2-pass gain |
+| **bigram prior** | **bigram** | **fixed 0.1** | **80/20** | **6684** | **1.1226** | **1.1224** | **Best overall BPB. No clear 2-pass gain** |
 
-**Key finding:** Zero prior preserves single-pass quality (~1.1220, matching E1's 1.1214) but the model completely ignores the lookahead injection — zero two-pass gain. Non-zero prior (mean embedding) forces the model to engage with lookahead throughout training, enabling two-pass refinement (-0.010 BPB) at the cost of single-pass degradation (+0.012). This is a fundamental tension — the model must train with lookahead signal to learn to use it.
+**Key findings:**
+1. **Bigram prior + curriculum achieves best overall BPB: 1.1224** — only 0.001 above E1's 1.1214, with minimal training disruption.
+2. However, the two-pass gain is negligible — the bigram prior is informative enough that the model's own predictions don't add much on top.
+3. Mean embedding prior gives the best two-pass refinement (-0.012) but degrades single-pass by +0.012 — a wash.
+4. Zero prior preserves single-pass perfectly but model ignores lookahead entirely.
+5. The fundamental tension: informative priors → good single-pass but no refinement gain; uninformative priors → refinement works but single-pass suffers.
 
-**Best configs remain:**
-- **Best single-pass:** E1 LeakyReLU = 1.1214 (no lookahead)
-- **Best two-pass:** smear+leaky frac=0.05 with mean prior = **1.1236** (gate_fwd) or smear+leaky curriculum with mean prior = **1.1237**
+**Best configs:**
+- **Best BPB overall:** bigram prior + curriculum = **1.1224** (2-pass, though 1-pass is equally good at 1.1226)
+- **Best proven refinement:** mean prior frac=0.05 = **1.1236** (2-pass, with clear -0.010 gain over own 1-pass)
 
 ---
 
@@ -319,14 +326,13 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 **Expected:** -0.0025 BPB based on the SOTA submission (1.1218 pre-TTT → 1.1194 post-TTT). ~410s eval time, well within the 10-min eval budget.
 **Why:** Proven technique used by the current #1 submission. Stacks on top of any model quality.
 
-| Metric | Value |
-|--------|-------|
-| Pre-TTT BPB (1-pass s64) | 1.1329 |
-| Pre-TTT BPB (2-pass s64) | **1.1231** |
-| Post-TTT BPB (single-pass scoring) | 1.1509 (WORSE) |
-| Post-TTT BPB (lookahead scoring) | ~1.160 (WORSE, hit time limit at chunk 911/1893) |
-| TTT eval time | 460s (single-pass), >300s partial (lookahead) |
-| Notes | TTT hurts the lookahead-trained model. SGD adaptation (lr=0.002, 3 epochs) causes the model to diverge — BPB climbs monotonically after initial chunks. The SOTA's TTT hyperparameters were tuned for a vanilla model without lookahead features. The lookahead gate weights (gate_fwd) may be sensitive to SGD perturbation. Would need separate TTT hyperparameter tuning, or freezing lookahead-specific parameters during TTT. |
+| TTT Training Mode | Pre-TTT (1-pass) | Pre-TTT (2-pass) | Post-TTT BPB | Delta vs 2-pass |
+|-------------------|-----------------|-----------------|-------------|-----------------|
+| Single-pass TTT training | 1.1329 | 1.1231 | 1.1509 | +0.028 |
+| Two-pass TTT, loss on 2nd only | 1.1227 | 1.1227 | 1.1428 | +0.020 |
+| Two-pass TTT, loss on both | 1.1221 | 1.1221 | ~1.1584 | +0.036 |
+
+**Findings:** TTT hurts the lookahead-trained model regardless of training mode. Two-pass TTT training is better than single-pass (1.1428 vs 1.1509) but still net negative. The SOTA's TTT hyperparameters (lr=0.002, 3 epochs) are too aggressive for our model — BPB climbs monotonically after initial chunks. Would need lower LR or fewer epochs. The lookahead gate weights (gate_fwd) may be sensitive to SGD perturbation.
 
 ---
 
