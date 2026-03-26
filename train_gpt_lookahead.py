@@ -113,6 +113,7 @@ class Hyperparameters:
     ttt_momentum = float(os.environ.get("TTT_MOMENTUM", 0.9))
     ttt_batch_seqs = int(os.environ.get("TTT_BATCH_SEQS", 32))
     ttt_grad_clip = float(os.environ.get("TTT_GRAD_CLIP", 1.0))
+    ttt_twopass = int(os.environ.get("TTT_TWOPASS", 0))  # 0=single-pass, 1=loss on 2nd pass only, 2=loss on both
     # --- Eval temperature ---
     eval_temperature = float(os.environ.get("EVAL_TEMPERATURE", 1.0))
 def zeropower_via_newtonschulz5(G: Tensor, steps: int = 10, eps: float = 1e-7) -> Tensor:
@@ -274,7 +275,7 @@ CONTROL_TENSOR_NAME_PATTERNS = tuple(
     pattern
     for pattern in os.environ.get(
         "CONTROL_TENSOR_NAME_PATTERNS",
-        "attn_scale,attn_scales,mlp_scale,mlp_scales,resid_mix,resid_mixes,q_gain,skip_weight,skip_weights,smear,dtg_gate,ve_layer_scales,ve_shared.scale,draft_type_emb,real_type_emb,gate_fwd,scale_fwd",
+        "attn_scale,attn_scales,mlp_scale,mlp_scales,resid_mix,resid_mixes,q_gain,skip_weight,skip_weights,smear,dtg_gate,ve_layer_scales,ve_shared.scale,draft_type_emb,real_type_emb,scale_fwd",
     ).split(",")
     if pattern
 )
@@ -564,15 +565,13 @@ class SmearGate(nn.Module):
     def __init__(self, dim: int, lookahead: bool = False):
         super().__init__()
         self.gate = nn.Parameter(torch.zeros(dim, dtype=torch.float32))
-        if lookahead:
-            self.gate_fwd = nn.Parameter(torch.full((dim,), -3.0, dtype=torch.float32))
+        self.lookahead = lookahead
     def forward(self, x: Tensor, lookahead_emb: Tensor | None = None) -> Tensor:
         g = torch.sigmoid(self.gate.to(dtype=x.dtype))[None, None, :]
         x_prev = torch.cat([torch.zeros_like(x[:, :1]), x[:, :-1]], dim=1)
         out = (1 - g) * x + g * x_prev
-        if hasattr(self, 'gate_fwd') and lookahead_emb is not None:
-            g_fwd = torch.sigmoid(self.gate_fwd.to(dtype=x.dtype))[None, None, :]
-            out = (1 - g_fwd) * out + g_fwd * lookahead_emb
+        if self.lookahead and lookahead_emb is not None:
+            out = out + 0.1 * lookahead_emb
         return out
 class BigramHashEmbedding(nn.Module):
     def __init__(self, bigram_vocab_size: int, bigram_dim: int, model_dim: int,
@@ -1376,7 +1375,20 @@ def eval_val_sliding_ttt(
                         y = local[1:].reshape(-1, seq_len)
                         optimizer.zero_grad(set_to_none=True)
                         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                            loss = base_model(x, y)
+                            if args.ttt_twopass > 0 and args.lookahead_smear:
+                                # Two-pass TTT: pass 1 → draft → pass 2
+                                with torch.no_grad():
+                                    draft_logits = base_model.forward_logits(x).detach()
+                                la_emb = F.softmax(draft_logits / max(args.draft_temp, 0.01), dim=-1) @ base_model.tok_emb.weight
+                                la_ids = draft_logits.argmax(dim=-1) if args.lookahead_bigram else None
+                                loss_p2 = base_model(x, y, lookahead_emb=la_emb.contiguous(), lookahead_ids=la_ids)
+                                if args.ttt_twopass == 2:
+                                    loss_p1 = base_model(x, y)
+                                    loss = loss_p1 + loss_p2
+                                else:
+                                    loss = loss_p2
+                            else:
+                                loss = base_model(x, y)
                         loss.backward()
                         if world_size > 1:
                             for p in ttt_params:
@@ -1621,8 +1633,6 @@ def main() -> None:
     if base_model.skip_weights.numel() > 0:
         scalar_params.append(base_model.skip_weights)
     scalar_params.append(base_model.smear.gate)
-    if hasattr(base_model.smear, 'gate_fwd'):
-        scalar_params.append(base_model.smear.gate_fwd)
     if base_model.bigram is not None:
         scalar_params.append(base_model.bigram.scale)
     if args.draft_enabled:
@@ -1776,7 +1786,7 @@ def main() -> None:
         return remaining_ms / max(warmdown_ms, 1e-9) if remaining_ms <= warmdown_ms else 1.0
     _do_lookahead_twopass = args.twopass_train_frac > 0 and (args.lookahead_smear or args.lookahead_bigram)
     _lookahead_enabled = args.lookahead_smear or args.lookahead_bigram
-    # Precompute prior lookahead: uniform distribution → mean embedding
+    # Precompute prior lookahead: mean embedding (non-zero so model learns to use lookahead)
     _prior_lookahead_emb = None
     _prior_lookahead_ids = None
     if _lookahead_enabled:

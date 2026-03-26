@@ -191,16 +191,24 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 
 ---
 
-### Curriculum: Late-Stage Lookahead (80/20)
-**What:** Train with prior always flowing through SmearGate (so gate_fwd gets gradients), but only enable two-pass training for the last 20% of wallclock. Aims to get same two-pass quality with less training disruption.
-**Config:** `LOOKAHEAD_SMEAR=1 LOOKAHEAD_BIGRAM=0 TWOPASS_TRAIN_FRAC=0.1 LOOKAHEAD_START_FRAC=0.8 LEAKY_RELU_SLOPE=0.5 EVAL_PASSES=2`
+### Curriculum & Prior Ablation
+**What:** Sweep curriculum (late-stage lookahead) and prior type (mean embedding vs zeros) to find optimal single-pass / two-pass tradeoff.
 
-| Run | Steps | Step avg | Activated | 1-pass BPB | 2-pass BPB | Notes |
-|-----|-------|----------|-----------|------------|------------|-------|
-| v2 (find_unused) | 5714 | 105ms | step 5085 | 1.1334 | 1.1330 | Failed: DDP overhead killed step count |
-| **v3 (always prior)** | 6654 | 90.2ms | step 5596 | **1.1352** | **1.1237** | Works! Same 2-pass as full training. 1-pass still degraded vs E1 (1.1214) due to prior perturbation |
+| Run | Prior | Scale | Curriculum | Steps | 1-pass BPB | 2-pass BPB | Notes |
+|-----|-------|-------|------------|-------|------------|------------|-------|
+| v2 (find_unused) | mean | gate_fwd | 80/20 | 5714 | 1.1334 | 1.1330 | Failed: DDP overhead |
+| v3 (mean prior) | mean | gate_fwd | 80/20 | 6654 | 1.1352 | **1.1237** | Same 2-pass as full training |
+| v4 (zero prior) | zero | gate_fwd | 80/20 | 6399 | 1.1359 | 1.1265 | Worse than mean prior |
+| learned scale_fwd | zero | learned 0.1 | none | 6614 | **1.1224** | 1.1224 | No 2-pass gain — scale decayed to ~0 |
+| learned scale_fwd | zero | learned 0.1 | 80/20 | 6661 | **1.1225** | 1.1225 | Same — model ignores lookahead |
+| fixed 0.1 scale | zero | fixed 0.1 | none | 6654 | **1.1223** | 1.1225 | No 2-pass gain — model ignores zero prior |
+| fixed 0.1 scale | zero | fixed 0.1 | 80/20 | 6711 | **1.1220** | 1.1222 | Same |
 
-**Findings:** Curriculum achieves same two-pass BPB (1.1237) as full-training (1.1236) with only ~106 two-pass steps. Single-pass degradation (+0.014 vs E1) from the prior embedding flowing through all steps — gate_fwd init at sigmoid(-3.0) ≈ 0.05 still perturbs training. Could try more negative init (e.g. -5.0 → sigmoid ≈ 0.007).
+**Key finding:** Zero prior preserves single-pass quality (~1.1220, matching E1's 1.1214) but the model completely ignores the lookahead injection — zero two-pass gain. Non-zero prior (mean embedding) forces the model to engage with lookahead throughout training, enabling two-pass refinement (-0.010 BPB) at the cost of single-pass degradation (+0.012). This is a fundamental tension — the model must train with lookahead signal to learn to use it.
+
+**Best configs remain:**
+- **Best single-pass:** E1 LeakyReLU = 1.1214 (no lookahead)
+- **Best two-pass:** smear+leaky frac=0.05 with mean prior = **1.1236** (gate_fwd) or smear+leaky curriculum with mean prior = **1.1237**
 
 ---
 
@@ -313,10 +321,12 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 
 | Metric | Value |
 |--------|-------|
-| Pre-TTT BPB | |
-| Post-TTT BPB | |
-| Eval time | |
-| Notes | |
+| Pre-TTT BPB (1-pass s64) | 1.1329 |
+| Pre-TTT BPB (2-pass s64) | **1.1231** |
+| Post-TTT BPB (single-pass scoring) | 1.1509 (WORSE) |
+| Post-TTT BPB (lookahead scoring) | ~1.160 (WORSE, hit time limit at chunk 911/1893) |
+| TTT eval time | 460s (single-pass), >300s partial (lookahead) |
+| Notes | TTT hurts the lookahead-trained model. SGD adaptation (lr=0.002, 3 epochs) causes the model to diverge — BPB climbs monotonically after initial chunks. The SOTA's TTT hyperparameters were tuned for a vanilla model without lookahead features. The lookahead gate weights (gate_fwd) may be sensitive to SGD perturbation. Would need separate TTT hyperparameter tuning, or freezing lookahead-specific parameters during TTT. |
 
 ---
 
@@ -339,6 +349,36 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 | 1.00 | | baseline |
 | 1.05 | | |
 | 1.10 | | |
+
+---
+
+### E15: Tokenizer-Side Boundary Features (Single-Pass)
+**What:** Inject word-boundary and morphology signals directly into SmearGate/BigramHash using existing SentencePiece LUTs (`has_leading_space`, `base_bytes`, `is_boundary_token`), rather than relying on draft predictions. Concretely: add a small additive embedding or learned scale modulation conditioned on boundary bit, token byte-length bucket, and/or punctuation/digit class. The simplest version multiplies `SmearGate.scale` or `BigramHash.scale` by `(1 + α * is_boundary)` with a learned α.
+**Config:** No new env vars needed beyond feature flags. Single forward pass — no two-pass training or multi-pass eval. LeakyReLU stays on.
+**Expected:** If the two-pass lookahead gain (E3's -0.015) is mostly boundary-regime detection, this should capture a large fraction in one pass without degrading the base model. If it gets close to E1 + the two-pass delta, the entire draft machinery is unnecessary.
+**Why:** The passes 3+ convergence result (zero gain beyond pass 2) suggests the lookahead value is a one-shot boundary correction. The `has_leading_space` and `base_bytes` LUTs already exist in `build_sentencepiece_luts()`. Zero train/eval mismatch, zero step-time overhead.
+
+| Metric | Value |
+|--------|-------|
+| Steps | |
+| Step avg | |
+| Val BPB (s64) | |
+| Notes | |
+
+---
+
+### E16: Score-First Adaptive Cache Mixer (Eval-Time)
+**What:** At eval time, maintain an online count-based bigram table over already-scored validation tokens. Interpolate count-based log-probabilities with neural logits: `log p = log p_nn + λ · log p_cache`, where λ is a function of cache count and/or model entropy. The bigram table is 1024×1024 (4MB in float32). Updated only after tokens are scored (legal per competition rules). Apply on top of best trunk model.
+**Config:** Eval-time only — no training changes. Hyperparameters: smoothing constant, λ schedule (fixed vs. count-dependent vs. entropy-dependent), scoring order (sequential vs. random chunks).
+**Expected:** -0.001 to -0.003 BPB. The current #1 submission gets ~-0.0025 from full TTT; a count-based cache is much cheaper and could capture document-level statistics (names, topic words, formatting patterns) that the small neural model can't memorize. Stacks with TTT (E12) and temperature scaling (E14).
+**Why:** Exploits the separate 10-minute eval budget without any training cost. Well-studied technique (dynamic evaluation, cache LMs). At V=1024 the bigram table is small enough to fit trivially in GPU memory.
+
+| Metric | Value |
+|--------|-------|
+| Pre-cache BPB | |
+| Post-cache BPB | |
+| Eval time | |
+| Notes | |
 
 ---
 
