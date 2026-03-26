@@ -528,10 +528,12 @@ These experiments incorporate techniques from recent papers (2025–2026) and co
 
 | Quantile | Steps | Step avg | Val BPB | Notes |
 |----------|-------|----------|---------|-------|
-| 0.4 | | | | |
-| 0.5 | | | | |
-| 0.6 | | | | |
-| 0.7 | | | | |
+| 0.4 | 7070 | 84.9ms | **1.2488** | +0.127 vs baseline. Masking easy tokens starves gradient on token patterns the model needs |
+| 0.5 | ~7000 | ~84ms | **1.4161** | Worse. Higher quantile = more masking = more damage |
+| 0.6 | ~7000 | ~84ms | **1.6426** | Much worse |
+| 0.7 | ~7000 | ~84ms | **1.8575** | Catastrophic. Masking 70% of tokens destroys training |
+
+**Conclusion:** ESLM is harmful at all tested quantiles. At V=1024, even "easy" tokens carry useful gradient signal for maintaining learned representations. The paper's results on large-vocab models don't transfer — with 1024 tokens, the loss distribution is less skewed and every token matters.
 
 ---
 
@@ -607,10 +609,12 @@ These experiments incorporate techniques from recent papers (2025–2026) and co
 
 | Schedule | Stable% | Decay Shape | Val BPB | Notes |
 |----------|---------|-------------|---------|-------|
-| cosine (baseline) | — | — | 1.1194 | current |
-| WSD | 79% | sqrt | | |
-| WSD | 79% | linear | | |
-| WSD + raised β₂ | 79% | sqrt | | |
+| linear warmdown (baseline) | 50% decay | linear | 1.1214 | E1 baseline (WARMDOWN_ITERS=3500 of ~7000 steps) |
+| WSD | 79% | sqrt | **1.1226** | +0.0012 vs baseline. Essentially neutral |
+| WSD | 79% | linear | **1.1257** | +0.0043 vs baseline. Slightly worse than sqrt |
+| WSD + raised β₂ | 79% | sqrt | | not run — sqrt result doesn't justify further testing |
+
+**Conclusion:** WSD is neutral at this scale. The current 50% linear warmdown is already near-optimal. The "river valley" hypothesis may not apply with 10-min budgets where the stable phase is already short enough. The ~0.001 BPB difference is within seed variance.
 
 ---
 
@@ -623,9 +627,11 @@ These experiments incorporate techniques from recent papers (2025–2026) and co
 
 | γ | Steps | Val BPB | Notes |
 |---|-------|---------|-------|
-| 0.5 | | | |
-| 1.0 | | | |
-| 1.5 | | | |
+| 0.5 | ~7000 | **28.87** | Catastrophic divergence. Train loss oscillates 0.0004 ↔ 3.4 |
+| 1.0 | ~7000 | **32.34** | Same divergence pattern |
+| 1.5 | ~7000 | **32.44** | Same divergence pattern |
+
+**Conclusion:** MiLe creates a degenerate feedback loop at this scale. When the model becomes confident (low entropy), MiLe zeroes gradients for those tokens → model can't maintain learned patterns → loss oscillates wildly. The entropy weighting is fundamentally unstable as a training signal: it punishes the model for being confident. With V=1024 (lower natural entropy than V=32k+), the effect is amplified.
 
 ---
 
@@ -695,6 +701,86 @@ These experiments incorporate techniques from recent papers (2025–2026) and co
 | VE layers 9-10 | mean emb | | | | |
 | VE layers 9-10 | bigram | | | | |
 | VE layers 7-10 | mean emb | | | | |
+
+---
+
+## Strategic Review: Leaderboard Analysis (March 26, 2026)
+
+External review of the current parameter-golf leaderboard revealed a critical priority misalignment. The competition is being won at the **eval layer** (n-gram cache), not the architecture layer.
+
+### What's actually winning
+
+- **PR #727** achieves **0.9674 BPB** — neural-only 1.1271 dropping to 0.9674 with n-gram cache. That's **-0.16 BPB** from the cache alone.
+- The gap from 1.12 to sub-1.0 is almost entirely the n-gram cache technique. No architecture change in our experiments has exceeded ±0.005 BPB.
+- Best non-TTT neural model (#609, 1.1154) uses: XSA-all (all 11 layers), Full GPTQ, selective pruning.
+
+### What our experiments conclusively killed
+
+At this scale and budget, the following **do not help**: MTP (E11), ESLM (E24), MiLe (E30 — diverged), LAWA (E25), WSD (E29 — neutral), gated attention/value residual/DTG (E32 — all hurt via step time), temperature scaling (E14 — useless with softcap), boundary features (E15), non-uniform FFN (E10 — throughput loss), extended VE (E18 — throughput loss), bigram cache (E16), control-tensor TTT (E33 — too few params). The SOTA config is already well-tuned — improvements are at the systems/eval layer.
+
+### Why our n-gram cache failed (E16, E23) — specific fixable bugs
+
+1. **E16 used bigram only.** At V=1024, bigram counts too dense. Need 5-7-gram orders.
+2. **E23 used add-k smoothing (k=1).** Catastrophic for sparse tables — most 5-gram contexts seen once, so smoothed distribution is nearly uniform. Use **Stupid Backoff** (fixed α=0.4 discount per level).
+3. **λ=0.1 is 5-10x too high.** Effective mixing should be 0.01–0.05. Entropy-adaptive helps but the base must be lower.
+4. **Per-token Python loops.** Need vectorized batch lookups using XOR-hash into fixed-size tables (~4M buckets).
+
+### Revised priority order
+
+1. **E35: N-gram cache rewrite** — Stupid Backoff, orders 2-7, XOR-hash, vectorized. Expected: -0.10 to -0.16 BPB (50-80x more than any architecture change).
+2. **E36: XSA-all** — `XSA_LAST_N=11`. Flag flip, adopted by frontier submissions. Expected: -0.002 to -0.005 BPB.
+3. **E37: Full GPTQ** — second-order quantization + selective pruning. Could free artifact bytes for int8 mlp_down (E17 showed -0.0037 BPB but +2MB).
+4. **Combine best neural base + n-gram cache.** The cache improvement scales with better base models.
+
+---
+
+### E35: N-gram Cache Rewrite — Stupid Backoff (Eval-Time)
+**Category:** Eval-time only — zero training cost. **HIGHEST PRIORITY.**
+**What:** Complete rewrite of E23's n-gram cache. Key changes from E23:
+1. **Stupid Backoff** (Brants et al. 2007): for n-gram order k, score = count(context+token) / count(context) if count(context) > 0, else backoff to order k-1 with discount α=0.4. No explicit smoothing — just raw relative frequency with backoff.
+2. **XOR-hash into fixed-size count tables** (~4M buckets per n-gram order). Same pattern as BigramHashEmbedding but for counts.
+3. **Entropy-adaptive α** starting at 0.02 (not 0.1). When neural model entropy < 1.0 bits, α → 0 (trust model). When entropy > 4.0 bits, α → 0.05 (lean on cache).
+4. **Vectorized batch processing** — compute cache log-probs for entire batch at once using tensor ops, not per-token Python loops.
+5. **Orders 2-7** with backoff chain.
+**Config:** Eval-time only. Sweep: base_alpha in {0.01, 0.02, 0.05}, max_order in {5, 7}.
+**Expected:** -0.10 to -0.16 BPB based on PR #727 (1.1271 → 0.9674).
+
+| Max Order | Alpha | Adaptive | Pre-cache BPB | Post-cache BPB | Eval Time | Notes |
+|-----------|-------|----------|---------------|----------------|-----------|-------|
+| 7 | 0.02 | entropy | | | | |
+| 7 | 0.05 | entropy | | | | |
+| 5 | 0.02 | entropy | | | | |
+| 7 | 0.01 | entropy | | | | |
+
+---
+
+### E36: XSA on All Layers
+**Category:** Training improvement — flag change only
+**What:** Enable XSA (cross-attention self-attention subtraction) on all 11 layers instead of just the last 4. Currently `XSA_LAST_N=4` enables XSA on layers 7-10. The best non-TTT submission (#609, 1.1154) uses XSA on all layers. XSA removes self-value projection from attention output, forcing heads to attend to other tokens rather than copying their own value.
+**Config:** `XSA_LAST_N=11`
+**Expected:** -0.002 to -0.005 BPB. Most adopted technique across frontier submissions.
+**Risk:** XSA adds a small per-layer compute cost (GQA-aware projection subtraction). With 11 layers vs 4, this could add ~3-5ms/step. Need to verify step time doesn't regress.
+
+| XSA Layers | Steps | Step avg | Pre-TTT BPB | Post-TTT BPB | Notes |
+|------------|-------|----------|-------------|-------------|-------|
+| last 4 (baseline) | 7248 | 82.9ms | 1.1214 | 1.1189 | current |
+| all 11 | | | | | |
+
+---
+
+### E37: Full GPTQ + Selective Pruning
+**Category:** Post-training — quantization improvement
+**What:** Replace GPTQ-lite (per-row clip search over 5 percentiles) with full GPTQ (second-order quantization using Hessian information). Also add selective pruning: zero out the smallest-magnitude quantized weights to improve lzma compression. Since zeros compress extremely well, this could recover artifact bytes, potentially enabling int8 for mlp_down (E17: -0.0037 BPB but +2MB).
+**Config:** Post-training only. Need to implement GPTQ calibration pass using a small set of training data.
+**Expected:** -0.001 to -0.003 BPB from better quantization fidelity. Selective pruning could save 1-2MB of artifact space.
+**Risk:** GPTQ calibration adds eval-time compute (~5 min). Implementation is more complex than clip search.
+
+| Quantization | Pruning | Pre-TTT BPB | Artifact Size | Notes |
+|-------------|---------|-------------|---------------|-------|
+| GPTQ-lite (baseline) | none | 1.1214 | 15.8MB | current |
+| Full GPTQ | none | | | |
+| Full GPTQ | 5% smallest | | | |
+| GPTQ-lite + int8 mlp_down | 10% smallest | | | E17 combo |
 
 ---
 
