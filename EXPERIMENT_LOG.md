@@ -538,4 +538,3 @@ MLP down-projections lose most — relative MSE ~6e-3, **3x worse** than mlp_up 
 6. **Layer 0 attention is vestigial (3.8%).** Could be removed or repurposed.
 7. **VE at layers 9–10 is substantial (norms 23.4, 17.0).** Extending to more layers could help.
 8. **Skip at layer 7←2 is the strongest (38%).** U-Net is doing real work here.
-
