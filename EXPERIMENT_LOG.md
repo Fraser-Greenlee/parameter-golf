@@ -426,7 +426,7 @@ All experiments below run on the current SOTA (abaybektursun's LeakyReLU² + Par
 | Pre-TTT BPB | **1.1237** |
 | Post-TTT BPB | **1.1215** |
 | Artifact size | 15.9MB |
-| Notes | VE expansion adds ~3ms/step → ~375 fewer steps. +0.002 worse pre-TTT vs SOTA. The extra VE lookups at layers 7-8 don't pay for themselves — the step time cost outweighs the marginal benefit. |
+| Notes | +0.0026 worse post-TTT vs clean baseline (1.1189). VE expansion adds ~6.3ms/step → ~525 fewer steps. The extra VE lookups at layers 7-8 don't pay for themselves — step time cost outweighs any marginal benefit. |
 
 ---
 
@@ -511,9 +511,11 @@ These experiments incorporate techniques from recent papers (2025–2026) and co
 
 | Max Order | Smoothing | λ Strategy | Pre-cache BPB | Post-cache BPB | Notes |
 |-----------|-----------|------------|---------------|----------------|-------|
+| 5 | add-k (k=1) | entropy-adaptive λ=0.1 | 1.1218 | **1.150** (WORSE) | Timed out at chunk 951/1893. Cache hurts badly — same pattern as E16. |
 | 5 | Kneser-Ney | entropy-adaptive | | | |
-| 5 | add-k | entropy-adaptive | | | |
 | 7 | Kneser-Ney | entropy-adaptive | | | |
+
+**Findings (5-gram, add-k, λ=0.1 adaptive):** Cache interpolation worsens BPB by +0.028 — massive regression. λ=0.1 is still far too aggressive even with entropy scaling. The per-token loop is also extremely slow (~35s per 50 chunks). The fundamental issue may be that our add-k smoothing with k=1 produces nearly uniform distributions at higher n-gram orders (most 5-gram contexts are seen only once), so the cache is essentially adding noise. Key differences from community sub-1.0 implementations: (1) they likely use much lower effective λ, (2) proper Kneser-Ney smoothing handles unseen n-grams far better than add-k, (3) they may vectorize the cache lookup rather than per-token Python loops. The implementation needs a complete rewrite with Kneser-Ney and batched lookups before retesting.
 
 ---
 
@@ -542,9 +544,11 @@ These experiments incorporate techniques from recent papers (2025–2026) and co
 
 | K | Interval | Steps | ms/step | Pre-TTT BPB | Post-TTT BPB | Notes |
 |---|----------|-------|---------|-------------|-------------|-------|
-| 10 | 100 steps | 7152 | 83.9 | **1.1226** | **1.1202** | +0.0008 vs SOTA post-TTT. Fastest step time of any config — LAWA overhead negligible. Applied with k=10 checkpoints at end. |
+| 10 | 100 steps | 7152 | 83.9 | 1.1226 | 1.1202 | +0.0013 vs clean baseline (1.1189). EMA+SWA is better than LAWA for this model. |
 | 5 | 60s | | | | | |
 | 10 | 30s | | | | | |
+
+**Findings:** LAWA is worse than default EMA+SWA by +0.0013 BPB post-TTT. The LAWA paper's 15-25% efficiency gains may not transfer to this exact setup, which already uses tight SWA + high EMA decay (0.997). Not worth pursuing further sweeps.
 
 ---
 
@@ -652,12 +656,12 @@ These experiments incorporate techniques from recent papers (2025–2026) and co
 
 | Config | Steps | Step avg | Pre-TTT BPB | Post-TTT BPB | Artifact | Notes |
 |--------|-------|----------|-------------|-------------|----------|-------|
-| Clean baseline | pending | | | | | Running for comparison |
-| GATED_ATTENTION=1 | 6929 | 86.6ms | (crashed) | (crashed) | 15.9MB | Training OK, eval crashed from checkpoint file race. Resubmitted. |
-| VALUE_RESIDUAL=1 | 7105 | **84.5ms** | 1.1233 | 1.1210 | 15.8MB | 2ms/step faster! More steps. Pre-TTT +0.0015 vs SOTA. |
-| DTG_ENABLED=1 | 6582 | 91.2ms | 1.1237 | 1.1215 | 15.9MB | 4.7ms/step slower — per-block gate too expensive. Fewer steps. |
-| GA=1 + VR=1 | | | | | | pending — after GA rerun |
-| GA=1 + VR=1 + DTG=1 | | | | | | pending |
+| **Clean baseline** | **7248** | **82.9ms** | **1.1214** | **1.1189** | 15.8MB | Reproduction beats reported SOTA (1.1218/1.1194). Strong baseline. |
+| GATED_ATTENTION=1 | 6916 | 86.8ms | 1.1233 | 1.1210 | 15.9MB | +0.0021 worse. 3.9ms overhead from per-head gate linear. |
+| VALUE_RESIDUAL=1 | 7105 | 84.5ms | 1.1233 | 1.1210 | 15.8MB | +0.0021 worse. Slower steps cancel the identity-preservation benefit. |
+| DTG_ENABLED=1 | 6582 | 91.2ms | 1.1237 | 1.1215 | 15.9MB | +0.0026 worse. 8.3ms slower — per-block gate too expensive. |
+
+**Findings:** All features hurt. The SOTA config is already well-tuned — these architectural additions add step-time overhead that reduces total training steps, and the per-step benefit doesn't compensate. DTG is the worst offender (4.7ms overhead for zero BPB gain). VALUE_RESIDUAL's speed gain (84.5 vs 82.9ms) was noise relative to baseline, not a real improvement. Combination runs (GA+VR, GA+VR+DTG) are not worth pursuing since all individual features hurt.
 
 ---
 
