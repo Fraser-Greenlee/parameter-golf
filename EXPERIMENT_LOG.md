@@ -205,17 +205,20 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 | fixed 0.1 scale | zero | fixed 0.1 | 80/20 | 6711 | 1.1220 | 1.1222 | Same |
 | bigram prior | bigram | fixed 0.1 | none | 6625 | 1.1234 | 1.1232 | Good single-pass, no 2-pass gain |
 | **bigram prior** | **bigram** | **fixed 0.1** | **80/20** | **6684** | **1.1226** | **1.1224** | **Best overall BPB. No clear 2-pass gain** |
+| bigram prior | bigram | learned 0.1 | none | 6587 | 1.1235 | 1.1235 | Learned scale ≈ same as fixed |
+| bigram prior | bigram | learned 0.1 | 80/20 | 6630 | 1.1239 | 1.1237 | Slightly worse — optimizer overhead |
 
 **Key findings:**
-1. **Bigram prior + curriculum achieves best overall BPB: 1.1224** — only 0.001 above E1's 1.1214, with minimal training disruption.
+1. **Bigram prior + curriculum + fixed 0.1 scale achieves best overall BPB: 1.1224** — only 0.001 above E1's 1.1214, with minimal training disruption.
 2. However, the two-pass gain is negligible — the bigram prior is informative enough that the model's own predictions don't add much on top.
 3. Mean embedding prior gives the best two-pass refinement (-0.012) but degrades single-pass by +0.012 — a wash.
 4. Zero prior preserves single-pass perfectly but model ignores lookahead entirely.
-5. The fundamental tension: informative priors → good single-pass but no refinement gain; uninformative priors → refinement works but single-pass suffers.
+5. Learned scale adds nothing over fixed 0.1 — the optimizer doesn't find a better value.
+6. The fundamental tension: informative priors → good single-pass but no refinement gain; uninformative priors → refinement works but single-pass suffers.
 
 **Best configs:**
-- **Best BPB overall:** bigram prior + curriculum = **1.1224** (2-pass, though 1-pass is equally good at 1.1226)
-- **Best proven refinement:** mean prior frac=0.05 = **1.1236** (2-pass, with clear -0.010 gain over own 1-pass)
+- **Best BPB overall:** bigram prior + curriculum + fixed 0.1 = **1.1224** (2-pass, though 1-pass is equally good at 1.1226)
+- **Best proven refinement:** mean prior + gate_fwd + frac=0.05 = **1.1236** (2-pass, with clear -0.010 gain over own 1-pass)
 
 ---
 
@@ -347,13 +350,13 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 **Expected:** Up to -0.005 BPB if miscalibrated, but may be negligible given softcap. The ternary submission found T=0.90 optimal for relu².
 **Why:** Zero-cost eval-time search. Quick to test.
 
-| T | Val BPB (s64) | Notes |
-|---|---------------|-------|
-| 0.85 | | |
-| 0.90 | | |
-| 0.95 | | |
-| 1.00 | | baseline |
-| 1.05 | | |
+| T | 1-pass BPB | 2-pass BPB | Notes |
+|---|-----------|-----------|-------|
+| 0.85 | 1.1429 | 1.1429 | Much worse — too sharp |
+| 0.90 | 1.1308 | 1.1308 | Worse |
+| 0.95 | | | running |
+| 1.00 | ~1.1231 | ~1.1231 | baseline |
+| 1.05 | | | running |
 | 1.10 | | |
 
 ---
@@ -366,10 +369,10 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 
 | Metric | Value |
 |--------|-------|
-| Steps | |
-| Step avg | |
-| Val BPB (s64) | |
-| Notes | |
+| Steps | 6931 |
+| Step avg | 86.6ms |
+| Val BPB (s64) | **1.1225** |
+| Notes | Tied with E1 (1.1214) — boundary features neither help nor hurt. Zero step-time overhead. The model already captures word boundary info through its existing embeddings. Disproves the hypothesis that lookahead value comes from boundary detection. |
 
 ---
 
@@ -381,13 +384,158 @@ Predictions from a few steps ago may be preferable to current-step predictions t
 
 | Metric | Value |
 |--------|-------|
-| Pre-cache BPB | |
-| Post-cache BPB | |
-| Eval time | |
-| Notes | |
+| Pre-cache BPB (s64) | 1.1243 |
+| Post-cache BPB (λ=0.1) | 1.2634 (MUCH WORSE) |
+| Eval time | 190s |
+| Notes | Cache interpolation massively hurts. At V=1024 the bigram distribution is too dense/uniform — the smoothed cache predictions are worse than the neural model alone. λ=0.1 is likely too high; would need λ=0.001 or entropy-gated mixing. But the fundamental problem is that 1024×1024 bigram counts don't have enough discriminative power at this vocabulary size. |
 
 ---
 
-## Deprecated: Interleaved Draft Approach
+## SOTA Model Analysis (abaybektursun, 1.1215 BPB pre-TTT)
 
-The original approach doubled sequence length by interleaving draft tokens: `[x_0, d_1, x_1, d_2, ...]`. Timing tests showed ~193ms/step (2.3x baseline) with most overhead from draft batch construction (~78ms) rather than the longer sequence (~30ms). The lookahead features approach achieves the same goal (giving SmearGate/BigramHash future token info) without any sequence length increase, at baseline step cost.
+Full-stack analysis of the current SOTA model (LeakyReLU² + Parameter Banking, PR #549) on 6.55M validation tokens. Trained from scratch, scored at **1.1215 BPB** sliding window s64. Analysis scripts: `analyze_model.py` (v1), `analyze_model_v2.py` (v2). Results: `analysis_results_v2/a5f86f51/`.
+
+### Data Characterization
+
+**Token vocabulary breakdown** (V=1024, BPE on FineWeb):
+- 325 word-initial tokens (▁prefix), 402 continuation-alpha, 256 byte-fallback, 27 punctuation, 10 digits, 4 control
+- In actual val data: **40.7% word-initial, 38.6% single-char, 8.7% uppercase-start, 6.6% punctuation, 2.5% digit, 0.4% byte-fallback**
+
+**Word position distribution** — BPE-1024 splits words into many short pieces:
+
+| Position in word | Fraction |
+|-----------------|----------|
+| 0 (word start) | 40.8% |
+| 1 | 23.4% |
+| 2 | 17.2% |
+| 3 | 9.8% |
+| 4 | 4.6% |
+| 5+ | 4.2% |
+
+**Document statistics** — 50,000 documents in the validation set:
+- Mean length 1,240 tokens, median 733, p10=226, p90=2,454
+- 293,759 unique bigrams (28% of possible 1024²)
+
+### Token-Level Loss Decomposition
+
+**Word-initial tokens account for 67% of total loss with only 40% of tokens.** The v2 analysis breaks this down by position within word:
+
+| Word Position | Mean NLL | Fraction | Difficulty |
+|---------------|----------|----------|------------|
+| **0 (word start)** | **3.178** | 40.3% | HARD |
+| 1 (2nd piece) | 1.444 | 23.4% | easy |
+| 2 | 0.714 | 17.3% | easy |
+| 3 | 0.737 | 9.9% | easy |
+| 4 | 0.912 | 4.7% | easy |
+| 5+ | ~1.0–1.2 | 4.4% | easy |
+
+Position 0 is 2.2x harder than position 1 and 4.5x harder than position 2. The model is near-perfect by position 2. Loss slightly increases for positions 4+ (longer/rarer words).
+
+**Loss by document position** — the model adapts within a document:
+
+| Doc Position | Mean NLL | Fraction |
+|-------------|----------|----------|
+| First 20 tokens | **2.490** | 1.6% |
+| 20–100 | 2.028 | 6.4% |
+| 100–500 | 1.901 | 26.0% |
+| 500+ | 1.883 | 66.0% |
+
+First 20 tokens of a document are 32% harder. The model adapts within ~100 tokens.
+
+**Loss by preceding token category:**
+
+| Previous Token | Mean NLL |
+|---------------|----------|
+| After punctuation | **2.774** |
+| After word-start | 2.225 |
+| After uppercase | 2.036 |
+| After digit | 1.690 |
+
+After punctuation (sentence/clause boundaries) is the hardest context — maximum entropy about what comes next.
+
+**Loss by text type** (documents bucketed into terciles by heuristic):
+
+| Heuristic | Low NLL | High NLL | Gap |
+|-----------|---------|----------|-----|
+| Repetition score | 2.156 | 1.793 | 17% — repetitive text much easier |
+| Punct density | 1.842 | 1.951 | More punct = harder |
+| Digit density | 1.992 | 1.822 | More digits = easier |
+
+Repetition is the strongest loss correlator. Cache/TTT techniques targeting document-level repetition patterns have clear upside.
+
+### Hardest and Easiest Token Types
+
+**Top 5 hardest tokens** (≥100 occurrences) — **every one is word-initial**, short ambiguous prefixes:
+`▁und` (7.30), `▁tw` (6.37), `▁int` (5.82), `▁des` (5.65), `▁Ne` (5.57)
+
+**Top 5 easiest tokens** — **every one is a continuation**: `<0x80>` (0.08), `rent` (0.24), `ility` (0.28), `ment` (0.30), `ion` (0.32)
+
+Full per-token-type loss table: `analysis_results_v2/*/token_type_loss.csv`
+
+### Model Activation Deep-Dive
+
+**Embedding space:** Token embedding norm 8.25, bigram contribution 1.85 (22.7%), bigram learned scale 0.034.
+
+**SmearGate does NOT distinguish word boundaries.** Cosine(smeared, unsmeared) is identical at 0.777 for both word-start and continuation tokens. SmearGate operates as a generic backward smoother, not a boundary detector.
+
+**Per-layer summary:**
+
+| Lyr | ResNorm | Attn% | MLP% | AttnSc | MixX0 | VE | XSA | Role |
+|-----|---------|-------|------|--------|-------|------|-----|------|
+| 0 | 526 | 3.8% | 98.9% | 0.067 | **0.630** | — | | MLP token lookup |
+| 1 | 361 | 17.8% | 55.7% | 0.371 | **0.595** | — | | Re-reads embeddings |
+| 3 | 184 | **35.7%** | 58.0% | 0.424 | -0.102 | — | | Attention peak |
+| 7 | 181 | 21.2% | 51.3% | **0.630** | -0.044 | — | yes | Strongest XSA |
+| 9 | 88 | 13.7% | 35.3% | 0.220 | -0.016 | **23.4** | yes | VE injection |
+| 10 | 60 | 8.0% | 55.4% | 0.145 | 0.006 | **17.0** | yes | Output |
+
+Key observations:
+- **Layer 0**: pure MLP token lookup, attention vestigial (3.8%). High MixX0 (0.63) re-reads raw embeddings — it's essentially a bigram/unigram statistics layer. Its FFN activation magnitude (mean 8.0) is 3x any other layer.
+- **Layer 3**: attention peak (35.7%), deepest encoder layer.
+- **Layer 7**: highest AttnScale (0.63), first XSA layer, strongest skip connection (38% of residual from encoder layer 2).
+- **Layers 9–10**: VE re-injects token identity (norms 23.4, 17.0). Small scales — careful adjustments.
+- **Layers 0–1** re-read raw embeddings via MixX0 (0.63, 0.60). All other layers MixX0 ≈ 0.
+
+### Residual Norm by Word Position
+
+| Lyr | WP0 | WP1 | WP2 | WP3 |
+|-----|-----|-----|-----|-----|
+| 0 | 407 | **759** | 595 | 450 |
+| 5 | 159 | 152 | 151 | 158 |
+| 10 | 51 | **70** | 67 | 59 |
+
+WP1 (second piece of word) has the highest residual norms — the model activates most after the ambiguous word-start. At output layer, WP0 has the *lowest* norm (51), consistent with low-confidence predictions.
+
+### U-Net Skip Connections
+
+| Decoder Lyr | Skip From | Skip Norm | Skip/Residual |
+|-------------|-----------|-----------|---------------|
+| 7 | ←2 | **81.0** | **37.9%** |
+| 6 | ←3 | 50.5 | 26.4% |
+| 8 | ←1 | 55.6 | 26.3% |
+| 5 | ←4 | 47.8 | 24.3% |
+| 9 | ←0 | 16.5 | 10.3% |
+
+Layer 7←2 is the strongest skip (38% of residual). Layer 9←0 has near-zero weight (0.009).
+
+### Quantization Error
+
+MLP down-projections lose most — relative MSE ~6e-3, **3x worse** than mlp_up (~2e-3). Mixed precision (int8 for mlp_down) is the clearest quantization improvement.
+
+### Hardest and Easiest Sequences
+
+**Hardest: OCR-corrupted text** — "per ceot. DUTY OX ARTICLES OF LCXCBT" (NLL 4.07), "optmU sc, closed urs-tc" (NLL 3.88). OCR artifacts in FineWeb set a floor on achievable BPB.
+
+**Easiest: legal boilerplate** — "JOCKEYCLUB.COM" (NLL 0.80), "reverse engineer, disassemble or otherwise reduce the Software" (NLL 0.82).
+
+### Implications
+
+1. **Word position 0 is the entire game.** NLL 3.18 vs 0.71 at position 2 — 4.5x gap. All approaches should target word-initial tokens.
+2. **Document-initial tokens are 32% harder.** First 20 tokens NLL 2.49 vs 1.88 at pos 500+. TTT/cache should target early-document.
+3. **After punctuation is hardest context (NLL 2.77).** Sentence boundaries = maximum entropy.
+4. **Repetition is the strongest text-type predictor.** 17% gap between high/low repetition docs.
+5. **SmearGate doesn't distinguish word boundaries.** Cosine identical for word-start/continuation.
+6. **Layer 0 attention is vestigial (3.8%).** Could be removed or repurposed.
+7. **VE at layers 9–10 is substantial (norms 23.4, 17.0).** Extending to more layers could help.
+8. **Skip at layer 7←2 is the strongest (38%).** U-Net is doing real work here.
+

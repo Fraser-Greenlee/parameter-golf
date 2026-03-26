@@ -1,0 +1,237 @@
+==========================================================================================
+FULL-STACK MODEL ANALYSIS v2
+==========================================================================================
+
+Tokens analyzed: 6,553,600
+Overall mean NLL: 1.9063
+
+==========================================================================================
+MODULE 1: DATA CHARACTERIZATION
+==========================================================================================
+
+--- Token Category Frequencies (in validation data) ---
+  is_word_start            : 40.7%
+  is_uppercase_start       : 8.7%
+  is_punctuation           : 6.6%
+  is_digit                 : 2.5%
+  is_single_char           : 38.6%
+  is_byte_fallback         : 0.4%
+  is_control               : 0.1%
+
+--- Word Position Distribution ---
+  Position 0: 40.8%
+  Position 1: 23.4%
+  Position 2: 17.2%
+  Position 3: 9.8%
+  Position 4: 4.6%
+  Position 5: 2.0%
+  Position 6: 0.8%
+  Position 7+: 1.4%
+
+--- Document Statistics ---
+  Documents: 50,000
+  Length mean/median: 1240 / 733
+  Length p10/p90: 226 / 2454
+  Unique bigrams: 293,759 (28.02% of possible)
+
+==========================================================================================
+MODULE 2: LOSS × DATA CROSS-CORRELATION
+==========================================================================================
+
+--- Loss by Word Position (within word) ---
+   Pos   Mean NLL   Fraction   Difficulty
+     0     3.1777      40.3%         HARD
+     1     1.4437      23.4%         easy
+     2     0.7136      17.3%         easy
+     3     0.7374       9.9%         easy
+     4     0.9116       4.7%         easy
+     5     1.0065       2.0%         easy
+     6     1.0757       0.9%         easy
+    7+     1.2454       1.5%
+
+--- Loss by Document Position ---
+      first_20: loss=2.4898  frac=1.6%
+        20_100: loss=2.0279  frac=6.4%
+       100_500: loss=1.9009  frac=26.0%
+      500_plus: loss=1.8825  frac=66.0%
+
+--- Loss by Preceding Token Category ---
+           after_word_start: loss=2.2252  frac=40.2%
+          after_punctuation: loss=2.7741  frac=7.1%
+                after_digit: loss=1.6903  frac=2.8%
+            after_uppercase: loss=2.0363  frac=9.3%
+
+--- Loss by Text Type (document heuristic terciles) ---
+            uppercase_ratio: low=1.9345 (2,053,481tok) | mid=1.9094 (2,410,711tok) | high=1.8750 (2,089,408tok)
+              punct_density: low=1.8421 (1,499,231tok) | mid=1.8902 (2,146,634tok) | high=1.9513 (2,907,735tok)
+              digit_density: low=1.9915 (1,708,040tok) | mid=1.9346 (2,326,140tok) | high=1.8224 (2,519,420tok)
+        byte_fallback_ratio: low=1.9005 (2,668,105tok) | mid=1.8657 (1,309,543tok) | high=1.9330 (2,575,952tok)
+           repetition_score: low=2.1560 (907,240tok) | mid=2.0081 (1,916,059tok) | high=1.7933 (3,730,301tok)
+
+--- Top 20 Hardest Token Types (by mean NLL) ---
+  Rank    ID           Piece   Mean NLL    Count  WordStart
+     1   761          '▁und'     7.3004      301        yes
+     2   687           '▁tw'     6.3711      616        yes
+     3   595          '▁int'     5.8238     1341        yes
+     4   682          '▁des'     5.6532     1588        yes
+     5   724           '▁Ne'     5.5732      762        yes
+     6   629           '▁pe'     5.5685      801        yes
+     7   893           '▁br'     5.5588     1854        yes
+     8   130        '<0x7E>'     5.4814      101         no
+     9   797          '▁bus'     5.4611      318        yes
+    10   901          '▁set'     5.4166     1845        yes
+    11   871         '▁high'     5.3897     1706        yes
+    12   916          '▁ins'     5.3673     1634        yes
+    13   639           '▁kn'     5.3662      894        yes
+    14   884          '▁ent'     5.3597     2073        yes
+    15   844          '▁rem'     5.3259     2194        yes
+    16   653          '▁pre'     5.3211     3636        yes
+    17   917         '▁inst'     5.2873     1819        yes
+    18   782         '▁cons'     5.2847     2603        yes
+    19   900           '▁ac'     5.2759     1814        yes
+    20   849         '▁even'     5.2645     2342        yes
+
+--- Top 20 Easiest Token Types (by mean NLL, >=100 occurrences) ---
+  Rank    ID           Piece   Mean NLL    Count  WordStart
+     1   132        '<0x80>'     0.0841     1404         no
+     2   156        '<0x98>'     0.1085      748         no
+     3   166        '<0xA2>'     0.1639      647         no
+     4   167        '<0xA3>'     0.2225      261         no
+     5   176        '<0xAC>'     0.2260      164         no
+     6   726          'rent'     0.2395     2632         no
+     7   843         'ility'     0.2804     1968         no
+     8   189        '<0xB9>'     0.2874      144         no
+     9   178        '<0xAE>'     0.2915      233         no
+    10   391          'ment'     0.2961    10818         no
+    11   299           'ion'     0.3209    15916         no
+    12   173        '<0xA9>'     0.3284      749         no
+    13   725          'ious'     0.3334     2921         no
+    14   703           'hed'     0.3401     3154         no
+    15   619         'ition'     0.3417     3838         no
+    16   792          'cial'     0.3430     2010         no
+    17   133        '<0x81>'     0.3663      204         no
+    18   850           'hip'     0.3741     1875         no
+    19   461           'ial'     0.3760     5642         no
+    20   464            'gh'     0.3780     1337         no
+
+==========================================================================================
+MODULE 3: MODEL ACTIVATION DEEP-DIVE
+==========================================================================================
+
+--- Embedding Space ---
+  Token embedding norm (mean): 8.2529
+  Bigram contribution norm:    1.8515
+  Bigram/Embedding ratio:      0.2274
+  Bigram learned scale:        0.0344
+
+--- SmearGate by Word Position ---
+  Gate mean: 0.3462, std: 0.3035, range: [0.0415, 0.9492]
+  Dims gate > 0.3: 193/512, Dims gate < 0.1: 109/512
+  Word pos 0: smear delta norm = 14.0598
+  Word pos 1: smear delta norm = 14.6492
+  Word pos 2: smear delta norm = 15.1467
+  Word pos 3: smear delta norm = 13.9467
+  Word pos 4: smear delta norm = 13.7220
+  Cosine(smeared, unsmeared) — word-start: 0.7765
+  Cosine(smeared, unsmeared) — continuation: 0.7766
+
+--- Per-Layer Summary ---
+  Lyr  ResNorm  Attn%   MLP%  FFN+%  AttnSc   MLPSc   MixX  MixX0     VE  XSA
+    0    525.7   3.8%  98.9%  35.8%   0.067   0.159  0.634  0.630   0.00     
+    1    360.7  17.8%  55.7%  22.0%   0.371   0.227  0.328  0.595   0.00     
+    2    284.8  16.4%  69.5%  25.0%   0.376   0.244  0.350 -0.063   0.00     
+    3    183.9  35.7%  58.0%  24.8%   0.424   0.229  0.331 -0.102   0.00     
+    4    149.5  26.5%  61.9%  25.6%   0.418   0.229  0.380 -0.065   0.00     
+    5    156.3  24.2%  59.3%  25.9%   0.467   0.277  0.416 -0.022   0.00     
+    6    166.4  31.6%  55.6%  27.2%   0.512   0.304  0.449 -0.009   0.00     
+    7    180.7  21.2%  51.3%  27.9%   0.630   0.330  0.525 -0.044   0.00  yes
+    8    151.2  19.6%  40.4%  26.4%   0.489   0.300  0.517 -0.039   0.00  yes
+    9     87.6  13.7%  35.3%  26.7%   0.220   0.230  0.384 -0.016  23.37  yes
+   10     59.6   8.0%  55.4%  30.4%   0.145   0.164  0.344  0.006  17.01  yes
+
+--- Per-Head Q-Gain (learned attention temperature) ---
+  Layer  0: [2.266 1.562 1.672 1.570 2.500 2.594 2.172 3.125]
+  Layer  1: [2.984 2.969 3.156 2.969 2.922 3.219 2.484 1.203]
+  Layer  2: [3.078 2.859 1.711 1.320 3.031 2.250 2.062 1.352]
+  Layer  3: [2.047 2.656 2.438 1.594 2.766 3.141 2.094 1.859]
+  Layer  4: [2.156 2.859 2.703 2.078 3.031 2.953 2.234 1.656]
+  Layer  5: [1.984 2.812 2.375 2.562 2.922 2.016 2.625 2.531]
+  Layer  6: [2.703 2.969 1.719 2.391 2.359 2.109 2.484 2.672]
+  Layer  7: [1.922 3.031 2.203 2.594 2.422 1.547 3.031 2.594]
+  Layer  8: [3.156 2.641 3.141 2.406 1.266 2.141 2.391 2.844]
+  Layer  9: [2.578 2.594 2.547 2.203 2.500 2.703 2.812 2.328]
+  Layer 10: [1.859 1.961 2.469 1.336 2.188 2.453 2.422 2.625]
+
+--- Skip Connections (U-Net decoder) ---
+  Layer   SkipNorm  SkipWeight  Skip/Resid
+      5      47.79      0.3186      0.2428
+      6      50.53      0.2450      0.2642
+      7      81.03      0.2589      0.3794
+      8      55.63      0.1536      0.2631
+      9      16.49      0.0086      0.1030
+
+--- Residual Norm by Word Position (per layer) ---
+  Lyr      WP0      WP1      WP2      WP3      WP4
+    0    406.9    759.0    594.5    449.9    401.2
+    1    303.1    470.3    390.1    338.4    309.8
+    2    256.9    292.7    331.7    304.9    286.0
+    3    170.3    182.9    202.1    204.3    197.4
+    4    136.8    148.9    162.8    167.1    166.0
+    5    158.8    151.8    151.0    158.1    163.1
+    6    181.0    161.6    150.8    153.0    158.2
+    7    199.7    174.7    163.0    163.0    166.3
+    8    160.2    154.1    140.9    137.6    138.5
+    9     93.6     88.1     80.7     80.1     81.0
+   10     50.5     70.4     66.5     59.4     58.4
+
+--- Quantization Error (top 15 by relative MSE) ---
+                     Weight  Type     RelMSE
+            layer3_mlp_down  int6   6.20e-03
+            layer0_mlp_down  int6   6.20e-03
+            layer2_mlp_down  int6   6.17e-03
+            layer1_mlp_down  int6   6.10e-03
+            layer4_mlp_down  int6   6.06e-03
+            layer5_mlp_down  int6   6.06e-03
+            layer6_mlp_down  int6   5.84e-03
+           layer10_mlp_down  int6   5.74e-03
+            layer9_mlp_down  int6   5.67e-03
+            layer7_mlp_down  int6   5.59e-03
+            layer8_mlp_down  int6   5.59e-03
+                 layer0_out  int6   4.33e-03
+                   layer0_v  int6   3.96e-03
+                   layer0_k  int6   3.30e-03
+                   layer4_q  int6   3.02e-03
+
+--- Hardest Sequences (top 5) ---
+  #1 (loss=4.0660): orn starch, 85, per ceot. Salt, 80 per cent, DUTY OX ARTICLES OF LCXCBT. Ol...
+      pos= 270 nll=15.832 tok= 295 piece='ic'
+      pos= 287 nll=13.753 tok= 956 piece='f'
+      pos= 283 nll=13.428 tok= 994 piece='3'
+      pos= 170 nll=13.329 tok= 946 piece='s'
+      pos=  70 nll=11.961 tok= 812 piece='▁now'
+  #2 (loss=3.8763): 'jc; March, opened , closed ; May, optmU sc, closed urs-tc. Corn No. FebTuarr...
+      pos=1521 nll=17.292 tok= 574 piece='ib'
+      pos=  66 nll=12.707 tok= 273 piece='ou'
+      pos=  55 nll=12.126 tok= 906 piece='▁av'
+      pos=1840 nll=10.998 tok= 891 piece='ied'
+      pos=  31 nll=10.726 tok= 343 piece='ur'
+  #3 (loss=3.4262): erature and physeit;l g! ograplhy will ibe on Friday, Jun' G, and on t Saturday shot'l m. nageni...
+      pos= 989 nll=13.342 tok= 690 piece='use'
+      pos=1397 nll=12.490 tok= 605 piece='▁other'
+      pos= 848 nll=12.315 tok= 903 piece='▁car'
+      pos= 454 nll=12.281 tok= 360 piece='▁an'
+      pos= 549 nll=12.114 tok= 375 piece='oo'
+  #4 (loss=3.3517): oawe snips, senator Stanford also is un derstood to be only partly in accord with the Dlscusstof Customs Administ...
+      pos= 408 nll=12.280 tok= 990 piece='j'
+      pos=1845 nll=12.152 tok= 997 piece='U'
+      pos=  19 nll=12.138 tok= 293 piece='▁d'
+      pos= 415 nll=12.028 tok= 366 piece='▁as'
+      pos= 270 nll=11.919 tok= 406 piece='op'
+  #5 (loss=3.3188): e'.jcItd hei' from" the1( i house. I Ai\e'rinl was fine(d $10 l andli Mis:;, Dav...
+      pos= 398 nll=14.886 tok= 279 piece='en'
+      pos=1272 nll=14.756 tok= 424 piece='▁from'
+      pos=1770 nll=14.083 tok= 558 piece='▁man'
+      pos=1888 nll=12.681 tok= 588 piece='ations'
+      pos= 848 nll=12.369 tok= 751 piece='ities'
+
+==========================================================================================
